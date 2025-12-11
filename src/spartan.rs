@@ -1,0 +1,419 @@
+use itertools::{izip, Itertools};
+
+use feanor_math::integer::{BigIntRing, IntegerRingStore};
+use feanor_math::divisibility::DivisibilityRing;
+use feanor_math::rings::field::AsField;
+use feanor_math::field::Field;
+use feanor_math::ring::{RingStore, El};
+use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
+
+use crate::{
+    codes::foldablecodes::RSFoldableCode,
+    basefold::{
+        MultilinearPCS,
+        BaseFoldPCS
+    },
+    r1cs::R1CS,
+    util::{gen_vector, Coeff, CoeffRing},
+    multilinear::{
+        sumcheck::{Sumcheck, SumcheckBase},
+        MultilinearBasis, MultilinearBasisEvals,
+        evals_to_coeffs_inplace, evaluate_at_fromcoeff
+    }
+};
+
+pub struct SpartanPIOP<'a, PCS: MultilinearPCS>
+{
+    vc_rows: usize,
+    vc_cols: usize,
+    tau: Vec<Coeff<PCS::Poly>>,
+    z: Vec<Coeff<PCS::Poly>>,
+    r1cs: R1CS<'a, CoeffRing<PCS::Poly>>,
+    zA: Vec<Coeff<PCS::Poly>>,
+    zB: Vec<Coeff<PCS::Poly>>,
+    zC: Vec<Coeff<PCS::Poly>>,
+    pcs: PCS,
+    zcoeff: Vec<Coeff<PCS::Poly>>,
+    com: PCS::C
+}
+
+impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
+    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
+{
+    pub fn new_extra(field: &'a AsField<R>, z: Vec<El<AsField<R>>>, r1cs: R1CS<'a, AsField<R>>, zA: Vec<El<AsField<R>>>, zB: Vec<El<AsField<R>>>, zC: Vec<El<AsField<R>>>, ver_rep: usize) -> Self
+    {
+        assert!(z.len().is_power_of_two());
+        let vc_cols = z.len().ilog2() as usize;
+        let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
+        evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
+        // TODO: set reasonable parameters here
+        let k0 = 1;
+        let c = 8;
+        let mut pcs = BaseFoldPCS::new(field, vc_cols, k0, c, ver_rep);
+        let com = pcs.commit(&zcoeff);
+
+        let vc_rows = r1cs.A.rowlogsize();
+
+        let tau = (0..vc_rows).map(|_| pcs.fs.challenge()).collect();
+
+        Self {
+            pcs,
+            vc_rows,
+            vc_cols,
+            tau,
+            z,
+            r1cs,
+            zA, zB, zC,
+            zcoeff,
+            com
+        }
+    }
+
+    pub fn new(ring: &'a AsField<R>, z: Vec<El<AsField<R>>>, r1cs: R1CS<'a, AsField<R>>, ver_rep: usize) -> Self
+    {
+        let zA = r1cs.A.mul(&z);
+        let zB = r1cs.B.mul(&z);
+        let zC = r1cs.C.mul(&z);
+        SpartanPIOP::new_extra(ring, z, r1cs, zA, zB, zC, ver_rep)
+    }
+
+    pub fn proofsize(&self) -> usize {
+        let rowchecksize = 4*self.vc_rows;
+        let linchecksize = 3*self.vc_cols;
+        let ZZbig: BigIntRing = BigIntRing::RING;
+        let bits = ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
+        println!("{}", self.pcs.proofsize() >> (3 + 10));
+        return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)
+    }
+}
+    
+impl<'a, PCS: MultilinearPCS> SpartanPIOP<'a, PCS>
+{
+    pub fn field(&self) -> &CoeffRing<PCS::Poly> {
+        self.pcs.coeffring()
+    }
+
+    pub fn varcount_rows(&self) -> usize {
+        self.vc_rows
+    }
+
+    pub fn varcount_cols(&self) -> usize {
+        self.vc_cols
+    }
+
+    pub fn tau(&self) -> &Vec<Coeff<PCS::Poly>> {
+        &self.tau
+    }
+
+    pub fn challenge(&mut self) -> Coeff<PCS::Poly> {
+        self.pcs.get_challenge()
+    }
+
+    pub fn get_zM(&self) -> [&Vec<Coeff<PCS::Poly>>; 4] {
+        [&self.z, &self.zA, &self.zB, &self.zC]
+    }
+}
+
+use rand::RngCore;
+use rand_seeder::{Seeder, SipRng};
+
+impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
+    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
+{
+    pub fn random(field: &'a AsField<R>, vc: usize, vcrows: usize, ver_rep: usize) -> Self {
+        let mut rng: SipRng = Seeder::from("SpartanPIOP").into_rng();
+        let mut z = gen_vector::<El<AsField<R>>>(||
+            // field.random_element(rand::random::<u64>), 1 << vc);
+            field.random_element(|| rng.next_u64()), 1 << vc);
+        while z.iter().all(|zi| field.is_zero(zi)) {
+            // z = gen_vector::<El<F>>(|| field.random_element(rand::random::<u64>), 1 << vc);
+            z = gen_vector::<El<AsField<R>>>(|| field.random_element(|| rng.next_u64()), 1 << vc);
+        }
+        let (r1cs, zA, zB, zC) = R1CS::random_from(field, &z, 1 << vcrows);
+        SpartanPIOP::new_extra(field, z, r1cs, zA, zB, zC, ver_rep)
+    }
+}
+
+impl<'a, PCS> SpartanPIOP<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+{
+    pub fn execute(self, ring: &CoeffRing<PCS::Poly>) -> bool {
+        let rowchecksum = self.field().zero();
+        let mut rowcheck = SpartanRowcheck::for_piop(self);
+        if let Some(rX) = rowcheck.execute(ring, rowchecksum) {
+            println!("SpartanRowcheck complete!");
+            rowcheck.check_eval(ring, rX)
+        } else { false }
+    }
+}
+
+
+pub struct SpartanRowcheckBase<'a, PCS: MultilinearPCS> {
+    piop: SpartanPIOP<'a, PCS>,
+}
+
+impl<'a, PCS: MultilinearPCS> SpartanRowcheckBase<'a, PCS>
+{
+    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self {
+        Self { piop }
+    }
+}
+
+impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+{
+    type F = CoeffRing<PCS::Poly>;
+
+    fn field(&self) -> &Self::F {
+        self.piop.field()
+    }
+
+    fn varcount(&self) -> usize {
+        self.piop.varcount_rows()
+    }
+
+    fn get_challenge(&mut self) -> El<Self::F> {
+        self.piop.pcs.get_challenge()
+    }
+
+    fn get_other_eval_points(&self) -> [i32; 2] {
+        [-1, 2]
+    }
+
+    fn get_scalars<'b, 'c>(&'c self, challs: &'b [El<Self::F>])
+        -> impl Iterator<Item = (El<Self::F>, El<Self::F>)> + 'b
+        where 'c: 'b
+    {
+        let field = self.piop.field();
+        let vc = self.varcount();
+        let i = challs.len();
+        let zero = field.zero();
+        let tmp = MultilinearBasis::new(field, &self.piop.tau[(vc - i)..]).evaluate(challs);
+        let taudmini = if i < vc { &self.piop.tau[vc - i - 1] } else { &zero };
+        let cz = field.mul_ref_fst(&tmp, field.sub_ref_snd(field.one(), taudmini));
+        let co = field.mul_ref_snd(tmp, taudmini);
+        let eq = MultilinearBasisEvals::new(field, &self.piop.tau[..(vc - i).saturating_sub(1)]);
+        eq.map(move |eqi| (
+            field.mul_ref(&cz, &eqi),
+            field.mul_ref_fst(&co, eqi)
+        ))
+    }
+}
+
+pub struct SpartanRowcheck<'a, PCS: MultilinearPCS> {
+    base: SpartanRowcheckBase<'a, PCS>,
+}
+
+impl<'a, PCS: MultilinearPCS> SpartanRowcheck<'a, PCS>
+{
+    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self {
+        Self { base: SpartanRowcheckBase::for_piop(piop) }
+    }
+
+    pub fn move_out(self) -> SpartanPIOP<'a, PCS> {
+        self.base.piop
+    }
+}
+
+impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+{
+    type SCB = SpartanRowcheckBase<'a, PCS>;
+
+    fn get_base(&self) -> &Self::SCB {
+        &self.base
+    }
+
+    fn get_base_mut(&mut self) -> &mut Self::SCB {
+        &mut self.base
+    }
+
+    fn get_workspace(&self) -> [&Vec<Coeff<PCS::Poly>>; 3] {
+        [&self.base.piop.zA, &self.base.piop.zB, &self.base.piop.zC]
+    }
+
+    fn get_workspace_mut(&mut self) -> [&mut Vec<Coeff<PCS::Poly>>; 3] {
+        [&mut self.base.piop.zA, &mut self.base.piop.zB, &mut self.base.piop.zC]
+    }
+
+    fn compute_term(ring: &CoeffRing<PCS::Poly>, at: [&Coeff<PCS::Poly>; 3], scalar: &Coeff<PCS::Poly>) -> Coeff<PCS::Poly> {
+        ring.mul_ref_fst(&scalar, ring.sub_ref_snd(ring.mul_ref(at[0], at[1]), at[2]))
+    }
+
+    fn check_eval(mut self, ring: &CoeffRing<PCS::Poly>, rX: Vec<Coeff<PCS::Poly>>) -> bool {
+        let rA = self.get_base_mut().get_challenge();
+        let rB = self.get_base_mut().get_challenge();
+        let rC = self.get_base_mut().get_challenge();
+        let ws = self.get_workspace_mut();
+        let linchecksum = SpartanLincheck::<PCS>::compute_start(ring,
+            &rA, &rB, &rC, ws[0].pop().unwrap(), ws[1].pop().unwrap(), ws[2].pop().unwrap());
+        let mut lincheck = SpartanLincheck::for_piop(self.base.piop, &[rA], &[rB], &[rC], rX);
+        if let Some(rY) = lincheck.execute(ring, linchecksum) {
+            println!("SpartanLincheck complete!");
+            lincheck.check_eval(ring, rY)
+        } else { false }
+    }
+}
+
+
+pub struct SpartanLincheckBase<'a, PCS: MultilinearPCS>
+{
+    piop: SpartanPIOP<'a, PCS>
+}
+
+impl<'a, PCS:MultilinearPCS> SpartanLincheckBase<'a, PCS>
+{
+    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self
+    {
+        Self { piop }
+    }
+}
+
+impl<'a, PCS> SumcheckBase<2> for SpartanLincheckBase<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+{
+    type F = CoeffRing<PCS::Poly>;
+
+    fn field(&self) -> &Self::F {
+        self.piop.field()
+    }
+
+    fn varcount(&self) -> usize {
+        self.piop.varcount_cols()
+    }
+
+    fn get_challenge(&mut self) -> El<Self::F> {
+        self.piop.pcs.get_challenge()
+    }
+
+    fn get_other_eval_points(&self) -> [i32; 1] {
+        [-1]
+    }
+
+    fn get_scalars<'c, 'd>(&'d self, challs: &'c [El<Self::F>])
+        -> impl Iterator<Item = (El<Self::F>, El<Self::F>)> + 'c
+        where 'd: 'c
+    {
+        let field = self.piop.field();
+        (0..(1 << (self.varcount() - challs.len()).saturating_sub(1))).map(|_|
+            (field.one(), field.one()))
+    }
+}
+
+pub struct SpartanLincheck<'a, PCS: MultilinearPCS>
+{
+    base: SpartanLincheckBase<'a, PCS>,
+    wsM: Vec<Coeff<PCS::Poly>>,
+}
+
+impl<'a, PCS> SpartanLincheck<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field>
+{
+
+    pub fn for_piop(piop: SpartanPIOP<'a, PCS>, rA: &[Coeff<PCS::Poly>], rB: &[Coeff<PCS::Poly>],
+        rC: &[Coeff<PCS::Poly>], rX: Vec<Coeff<PCS::Poly>>) -> Self
+    {
+        let wsM = SpartanLincheck::get_zM(&piop, rA, rB, rC, rX);
+        let base = SpartanLincheckBase::for_piop(piop);
+        Self { base, wsM }
+    }
+
+    pub fn get_zM(piop: &SpartanPIOP<'a, PCS>, rA: &[Coeff<PCS::Poly>], rB: &[Coeff<PCS::Poly>],
+        rC: &[Coeff<PCS::Poly>], rX: Vec<Coeff<PCS::Poly>>) -> Vec<Coeff<PCS::Poly>>
+    {
+        debug_assert!(rA.len() == rB.len());
+        debug_assert!(rB.len() == rC.len());
+        debug_assert!(1 << (piop.vc_rows - rX.len()) == rA.len());
+        // TODO: would it be faster to first make a linear combination of the matrices and only
+        // then evaluate that matrix at the rowvars?
+        let ArX = piop.r1cs.A.evaluate_rowvars(&rX);
+        let BrX = piop.r1cs.B.evaluate_rowvars(&rX);
+        let CrX = piop.r1cs.C.evaluate_rowvars(&rX);
+        let field = piop.field();
+        (0..(1 << piop.vc_cols)).map(|j| izip!(ArX.iter(), BrX.iter(), CrX.iter(), rA, rB, rC).fold(
+            field.zero(), |acc, (ArXi, BrXi, CrXi, rAi, rBi, rCi)| field.add(acc,
+                SpartanLincheck::<PCS>::compute_start(field, rAi, rBi, rCi,
+                    field.clone_el(&ArXi[j]), field.clone_el(&BrXi[j]), field.clone_el(&CrXi[j])))
+        )).collect()
+    }
+
+    pub fn compute_start(ring: &CoeffRing<PCS::Poly>, rA: &Coeff<PCS::Poly>, rB: &Coeff<PCS::Poly>,
+        rC: &Coeff<PCS::Poly>, vA: Coeff<PCS::Poly>, vB: Coeff<PCS::Poly>, vC: Coeff<PCS::Poly>)
+        -> Coeff<PCS::Poly>
+    {
+        ring.add(ring.mul_ref_fst(rA, vA),
+            ring.add(ring.mul_ref_fst(rB, vB), ring.mul_ref_fst(rC, vC)))
+    }
+
+    pub fn get_wsM(&self) -> &Vec<Coeff<PCS::Poly>> {
+        &self.wsM
+    }
+
+    pub fn get_wsM_mut(&mut self) -> &mut Vec<Coeff<PCS::Poly>> {
+        &mut self.wsM
+    }
+}
+
+impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
+    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+{
+    type SCB = SpartanLincheckBase<'a, PCS>;
+
+    fn get_base(&self) -> &Self::SCB {
+        &self.base
+    }
+
+    fn get_base_mut(&mut self) -> &mut Self::SCB {
+        &mut self.base
+    }
+
+    fn get_workspace(&self) -> [&Vec<Coeff<PCS::Poly>>; 2] {
+        [&self.wsM, &self.base.piop.z]
+    }
+
+    fn get_workspace_mut(&mut self) -> [&mut Vec<Coeff<PCS::Poly>>; 2] {
+        [&mut self.wsM, &mut self.base.piop.z]
+    }
+
+    fn compute_term(ring: &CoeffRing<PCS::Poly>, at: [&Coeff<PCS::Poly>; 2], _scalar: &Coeff<PCS::Poly>) -> Coeff<PCS::Poly> {
+        ring.mul_ref(at[0], at[1])
+    }
+
+    fn check_eval(mut self, ring: &CoeffRing<PCS::Poly>, rX: Vec<Coeff<PCS::Poly>>) -> bool {
+        // TODO: check _evalM
+        let y = {
+            let [_evalM, evalz] = self.get_workspace();
+            debug_assert!(evalz.len() == 1);
+            ring.clone_el(&evalz[0])
+        };
+        {
+            let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, &self.base.piop.zcoeff);
+            debug_assert!(ring.eq_el(&y, &ev[0]));
+        }
+        let proof = self.base.piop.pcs.eval_fast(&self.base.piop.com, &rX,
+            ring.clone_el(&y), &self.base.piop.zcoeff);
+        self.base.piop.pcs.verify(self.base.piop.com, &rX, ring.clone_el(&y), &self.base.piop.zcoeff, proof)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use feanor_math::rings::zn::ZnRingStore;
+    use feanor_math::rings::zn::zn_64::Zn;
+
+    const VREP: usize = 100;
+
+    #[test]
+    fn test_spartan() {
+
+        let field = Zn::new(65537).as_field().ok().unwrap();
+
+        let N = 8;
+        // let N = 16;
+        
+        let spartan = SpartanPIOP::random(&field, N, 2*N, VREP);
+
+        assert!(spartan.execute(&field));
+    }
+}
