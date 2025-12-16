@@ -78,9 +78,17 @@ pub struct BaseFoldPCS<'a, F, C>
     ver_rep: usize
 }
 
+impl<'a, F, C> BaseFoldPCS<'a, F, C>
+    where F: RingStore<Type: Field>, C: FoldableCode<R = F>
+{
+    pub fn get_code(self) -> C {
+        self.code
+    }
+}
+
 
 impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
-    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing
+    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone
 {
     pub fn new(field: &'a AsField<R>, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     {
@@ -120,7 +128,7 @@ impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
 //     where R: RingStore + Clone, R::Type: DivisibilityRing,
 //     FC: FoldableCode<R = AsField<R>, C: LinearCode<R = AsField<R>>>
 impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
-    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing
+    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone
 {
     pub fn from(code: &'a RSFoldableCode<'a, AsField<R>>, varcount: usize, ver_rep: usize) -> Self
     {
@@ -168,10 +176,8 @@ impl<R: RingStore> BaseFoldProof<R> {
 impl<R: RingStore> Proof for BaseFoldProof<R>{}
 
 impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
-    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
-          C: FoldableCode<R = AsField<R>>
+    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone, C: FoldableCode<R = AsField<R>>
 {
-    
     type Poly = MultivariatePolyRingImpl<AsField<R>>;
     type C = BaseFoldCommitment<AsField<R>>;
     type P = BaseFoldProof<AsField<R>>;
