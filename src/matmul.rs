@@ -72,6 +72,7 @@ impl<'a, R: RingStore> SparseMatrixMul<'a, R>
 use rand::{Rng, RngCore};
 use rand_seeder::{Seeder, SipRng};
 
+// TODO: implement data structure differently so that its size does not depend on dimensions
 impl<'a, R> SparseMatrixMul<'a, R>
     where R: FiniteRingStore<Type: FiniteRing>
 {

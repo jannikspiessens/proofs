@@ -94,7 +94,9 @@ impl<'a, F> R1CS<'a, F>
 {
     // Generates random R1CS instances such that z is a valid transcript
     // we assume that the input vectors are ordered from lsb to msb
-    pub fn random_from(field: &'a F, z: &[El<F>], rowlen: usize) -> (Self, Vec<El<F>>, Vec<El<F>>, Vec<El<F>>) {
+    pub fn random_from(field: &'a F, z: &[El<F>], rowlen: usize)
+        -> (Self, Vec<El<F>>, Vec<El<F>>, Vec<El<F>>)
+    {
         debug_assert!(!z.iter().all(|zi| field.is_zero(zi)));
         let N = z.len();
         let A = SparseMatrixMul::random(field, rowlen, N, 3, "A");
