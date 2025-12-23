@@ -1,6 +1,6 @@
 use tracing::instrument;
 
-use feanor_math::algorithms::linsolve::{LinSolveRing, LinSolveRingStore};
+use feanor_math::algorithms::linsolve::LinSolveRing;
 use feanor_math::ring::{RingStore, El};
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
@@ -75,15 +75,14 @@ pub trait FoldableCode {
 
 }
 
-pub struct RSFoldableCode<'a, R: LinSolveRingStore<Type: LinSolveRing>> {
-    ring: &'a R,
+pub struct RSFoldableCode<'a, R: RingStore<Type: LinSolveRing>> {
     G0code: RScode<'a, R>,
     d: usize,
     t: Vec<Vec<El<R>>>
 }
 
 impl<'a, R> RSFoldableCode<'a, R> 
-    where R: LinSolveRingStore<Type: LinSolveRing> + FiniteRingStore<Type: FiniteRing>
+    where R: RingStore<Type: LinSolveRing + FiniteRing>
 {
     #[instrument(skip_all)]
     pub fn new(ring: &'a R, k0: usize, c: usize, d: usize) -> Self {
@@ -101,7 +100,6 @@ impl<'a, R> RSFoldableCode<'a, R>
         ));
 
         Self {
-            ring,
             G0code,
             d,
             t
@@ -110,7 +108,7 @@ impl<'a, R> RSFoldableCode<'a, R>
 }
 
 impl<'a, R> RSFoldableCode<'a, R> 
-    where R: LinSolveRingStore<Type: LinSolveRing>
+    where R: RingStore<Type: LinSolveRing>
 {
     pub fn from(ring: &'a R, k0: usize, c: usize, t: Vec<Vec<El<R>>>) -> Self {
 
@@ -120,7 +118,6 @@ impl<'a, R> RSFoldableCode<'a, R>
         assert!((0..d).all(|dind| t[dind].len() == c*k0*(1 << dind)));
 
         Self {
-            ring,
             G0code,
             d,
             t
@@ -128,13 +125,13 @@ impl<'a, R> RSFoldableCode<'a, R>
     }
 }
 
-impl<'a, Rg: LinSolveRingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, Rg> {
+impl<'a, Rg: RingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, Rg> {
 
     type R = Rg;
     type C = RScode<'a, Rg>;
 
     fn ring(&self) -> &Rg {
-        self.ring
+        self.G0code().ring()
     }
 
     fn d(&self) -> usize {

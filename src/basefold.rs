@@ -71,7 +71,6 @@ pub trait MultilinearPCS {
 pub struct BaseFoldPCS<'a, F, C>
     where F: RingStore<Type: Field>, C: FoldableCode<R = F>
 {
-    field: &'a F,
     fs: RefCell<FiatShamirSim<'a, F>>,
     polyring: MultivariatePolyRingImpl<F>,
     code: C,
@@ -81,6 +80,10 @@ pub struct BaseFoldPCS<'a, F, C>
 impl<'a, F, C> BaseFoldPCS<'a, F, C>
     where F: RingStore<Type: Field>, C: FoldableCode<R = F>
 {
+    pub fn field(&self) -> &F {
+        self.code.ring()
+    }
+
     pub fn get_code(self) -> C {
         self.code
     }
@@ -104,7 +107,6 @@ impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
         let fs = RefCell::new(FiatShamirSim::new(field));
         
         Self {
-            field,
             fs,
             polyring, 
             code,
@@ -117,16 +119,12 @@ impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
         let proofsize = d*2*self.ver_rep + 3*d +
             if self.code.k(0) == 0 { 0 } else { self.code.k(0).ilog2() as usize };
         let ZZbig: BigIntRing = BigIntRing::RING;
-        let bits = ZZbig.abs_log2_ceil(&self.field.characteristic(ZZbig).unwrap()).unwrap();
+        let bits = ZZbig.abs_log2_ceil(&self.field().characteristic(ZZbig).unwrap()).unwrap();
         let authpath = self.code.n(d).ilog2() as usize * 256; // worst-case no pruning
         return proofsize*(bits + authpath)
     }
 }
 
-// TODO: make traits more general like this
-// impl<'a, R: RingStore, FC> BaseFoldPCS<'a, AsField<R>, FC>
-//     where R: RingStore + Clone, R::Type: DivisibilityRing,
-//     FC: FoldableCode<R = AsField<R>, C: LinearCode<R = AsField<R>>>
 impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
     where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone
 {
@@ -142,7 +140,6 @@ impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
             varcount, 2*varcount as u16, (0, 0), Global);
 
         Self {
-            field,
             fs,
             polyring, 
             code: RSFoldableCode::from(field, code.k(0), code.c(), t),
@@ -210,7 +207,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
         let d = self.code.d();
         let vc = self.polyring.indeterminate_count();
         assert!(z.len() == vc);
-        let f = self.field;
+        let f = self.field();
         let unipolyring = self.get_unipolyring();
 
         let fsclone = self.fs.borrow().clone();
@@ -361,7 +358,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
     {
         let d = self.code.d();
         let vc = self.polyring.indeterminate_count();
-        let f = self.field;
+        let f = self.field();
         let unipolyring = self.get_unipolyring();
         
         let fsclone = self.fs.borrow().clone();

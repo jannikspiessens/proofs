@@ -2,7 +2,7 @@ use rand::RngCore;
 use rand_seeder::{Seeder, SipRng};
 
 use feanor_math::ring::{El, RingStore, RingExtension};
-use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
+use feanor_math::rings::finite::{FiniteRingStore, FiniteRing};
 
 pub type CoeffRing<P> = <<P as RingStore>::Type as RingExtension>::BaseRing;
 pub type Coeff<P> = El<CoeffRing<P>>;
@@ -53,7 +53,7 @@ pub struct FiatShamirSim<'a, R> {
     rng: SipRng
 }
 
-impl<'a, R: RingStore + FiniteRingStore<Type: FiniteRing>> FiatShamirSim<'a, R> {
+impl<'a, R: RingStore<Type: FiniteRing>> FiatShamirSim<'a, R> {
 
     fn get_rng() -> SipRng {
         Seeder::from("FiatShamirSim").into_rng()
@@ -99,7 +99,7 @@ pub mod tests {
     use feanor_math::rings::zn::zn_64::Zn;
 
     pub fn gen_random<R>(ring: &R, len: usize, seed: Option<&str>) -> Vec<El<R>>
-        where R: FiniteRingStore<Type: FiniteRing>
+        where R: RingStore<Type: FiniteRing>
     {
         if let Some(seed) = seed {
             let mut rng: SipRng = Seeder::from(seed).into_rng();
