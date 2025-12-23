@@ -3,8 +3,6 @@ use std::cell::RefCell;
 use itertools::izip;
 
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
-use feanor_math::rings::field::AsField;
-use feanor_math::divisibility::DivisibilityRing;
 use feanor_math::ring::{RingExtension, RingStore, RingBase, El};
 use feanor_math::field::{Field, FieldStore};
 use feanor_math::rings::finite::FiniteRing;
@@ -84,34 +82,8 @@ impl<'a, F, C> BaseFoldPCS<'a, F, C>
         self.code.ring()
     }
 
-    pub fn get_code(self) -> C {
-        self.code
-    }
-}
-
-
-impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
-    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone
-{
-    pub fn new(field: &'a AsField<R>, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
-    {
-        assert!(k0.is_power_of_two());
-
-        let code = RSFoldableCode::new(field, k0, c,
-            varcount - (k0.ilog2() as usize));
-        
-        let polyring = MultivariatePolyRingImpl::new_with(
-            AsField::from(field.get_ring().clone()),
-            varcount, 2*varcount as u16, (0, 0), Global);
-
-        let fs = RefCell::new(FiatShamirSim::new(field));
-        
-        Self {
-            fs,
-            polyring, 
-            code,
-            ver_rep
-        }
+    pub fn code(&self) -> &C {
+        &self.code
     }
 
     pub fn proofsize(&self) -> usize {
@@ -125,27 +97,38 @@ impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
     }
 }
 
-impl<'a, R> BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>
-    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone
+impl<'a, F, C> BaseFoldPCS<'a, F, C>
+    where F: RingStore<Type: Field + FiniteRing>, C: FoldableCode<R = F>
 {
-    pub fn from(code: &'a RSFoldableCode<'a, AsField<R>>, varcount: usize, ver_rep: usize) -> Self
+    pub fn reset_fs(&self) {
+        self.fs.borrow_mut().reset()
+    }
+}
+
+
+impl<'a, R> BaseFoldPCS<'a, R, RSFoldableCode<'a, R>>
+    where R: RingStore<Type: Field + FiniteRing> + Clone
+{
+    pub fn new(field: &'a R, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     {
-        let field = code.ring();
-        let t = (0..code.d()).map(|i| code.t(i).map(|el| field.clone_el(el)).collect()).collect();
+        assert!(k0.is_power_of_two());
+
+        let code = RSFoldableCode::new(field, k0, c,
+            varcount - (k0.ilog2() as usize));
+        
+        let polyring = MultivariatePolyRingImpl::new_with(field.clone(),
+            varcount, 2*varcount as u16, (0, 0), Global);
 
         let fs = RefCell::new(FiatShamirSim::new(field));
         
-        let polyring = MultivariatePolyRingImpl::new_with(
-            AsField::from(field.get_ring().clone()),
-            varcount, 2*varcount as u16, (0, 0), Global);
-
         Self {
             fs,
             polyring, 
-            code: RSFoldableCode::from(field, code.k(0), code.c(), t),
+            code,
             ver_rep
         }
     }
+
 }
 
 pub struct BaseFoldCommitment<R: RingStore>{
@@ -172,19 +155,19 @@ impl<R: RingStore> BaseFoldProof<R> {
 
 impl<R: RingStore> Proof for BaseFoldProof<R>{}
 
-impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
-    where R: RingStore<Type: DivisibilityRing + FiniteRing> + Clone, C: FoldableCode<R = AsField<R>>
+impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
+    where R: RingStore<Type: Field + FiniteRing> + Clone, C: FoldableCode<R = R>
 {
-    type Poly = MultivariatePolyRingImpl<AsField<R>>;
-    type C = BaseFoldCommitment<AsField<R>>;
-    type P = BaseFoldProof<AsField<R>>;
+    type Poly = MultivariatePolyRingImpl<R>;
+    type C = BaseFoldCommitment<R>;
+    type P = BaseFoldProof<R>;
 
     fn polyring(&self) -> &Self::Poly {
         &self.polyring
     }
 
     fn get_unipolyring(&self) -> DensePolyRing<CoeffRing<Self::Poly>> {
-        DensePolyRing::new(AsField::from(self.coeffring().get_ring().clone()), "X")
+        DensePolyRing::new(self.coeffring().clone(), "X")
     }
 
     fn get_challenge(&self) -> Coeff<Self::Poly> {
@@ -205,14 +188,14 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
         _y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P
     {
         let d = self.code.d();
-        let vc = self.polyring.indeterminate_count();
+        let vc = self.polyring().indeterminate_count();
         assert!(z.len() == vc);
         let f = self.field();
         let unipolyring = self.get_unipolyring();
 
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<El<DensePolyRing<AsField<R>>>> = Vec::with_capacity(d);
+        let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
         let eq = MultilinearBasis::new(f, &z).polynomial(&self.polyring);
         let mut wpoly = self.polyring.clone_el(poly);
         let mut scpoly = self.polyring.mul_ref_fst(poly, eq);
@@ -224,10 +207,10 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
         ), &y);*/
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<AsField<R>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<AsField<R>>> = Vec::with_capacity(
+        let mut last: Vec<El<R>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
         
         for dind in (0..d).rev() {
@@ -353,8 +336,8 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
         })
     }
 
-    fn eval_fast(&self, com: &BaseFoldCommitment<AsField<R>>, z: &[El<AsField<R>>], y: El<AsField<R>>, poly: &[El<AsField<R>>])
-        -> BaseFoldProof<AsField<R>>
+    fn eval_fast(&self, com: &BaseFoldCommitment<R>, z: &[El<R>], y: El<R>, poly: &[El<R>])
+        -> BaseFoldProof<R>
     {
         let d = self.code.d();
         let vc = self.polyring.indeterminate_count();
@@ -363,17 +346,17 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, AsField<R>, C>
         
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<El<DensePolyRing<AsField<R>>>> = Vec::with_capacity(d);
+        let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
         let mut hunivar = sumcheck_sum_basefold(&unipolyring, poly, z, &[], Some(f.clone_el(&y)));
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<AsField<R>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<AsField<R>>> = Vec::with_capacity(
+        let mut last: Vec<El<R>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
 
-        let mut challvec: Vec<El<AsField<R>>> = Vec::with_capacity(d - 1);
+        let mut challvec: Vec<El<R>> = Vec::with_capacity(d - 1);
         
         for dind in (0..d).rev() {
             let chall = self.get_challenge();
@@ -491,6 +474,7 @@ mod tests {
     use feanor_math::seq::VectorFn;
     use feanor_math::rings::zn::zn_64::Zn;
     use feanor_math::rings::finite::FiniteRingStore;
+    use feanor_math::rings::field::AsField;
 
     use crate::util::gen_vector;
     use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube};
