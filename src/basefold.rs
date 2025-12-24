@@ -2,6 +2,7 @@ use std::alloc::Global;
 use std::cell::RefCell;
 use itertools::izip;
 
+use feanor_math::homomorphism::Homomorphism;
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
 use feanor_math::ring::{RingExtension, RingStore, RingBase, El};
 use feanor_math::field::{Field, FieldStore};
@@ -22,8 +23,9 @@ use crate::codes::{
     foldablecodes::{FoldableCode, RSFoldableCode}
 };
 use crate::multilinear::{
-    MultilinearBasis, get_hypercube_coeffs,
-    evaluate_at_fromcoeff, MultilinearBasisEvals,
+    MultilinearBasis, MultilinearBasisEvals,
+    get_hypercube_coeffs, evals_to_coeffs_inplace,
+    evaluate_at_fromcoeff, evaluate_at_fromevals,
     sum_over_hypercube_withscalars, evalscalars_to_coeffscalars,
     sumcheck::{
         sumcheck_sum,
@@ -56,14 +58,15 @@ pub trait MultilinearPCS {
     
     fn open(&self, com: &Self::C, poly: &[Coeff<Self::Poly>]) -> bool;
 
-    fn eval(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
+    fn eval_slow(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P;
 
     fn verify(&self, com: Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool;
 
-    fn eval_fast(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
-        y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>]) -> Self::P;
+    fn eval(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
+        y: Coeff<Self::Poly>, polycoeff: Option<&[Coeff<Self::Poly>]>,
+        polyeval: Option<&[Coeff<Self::Poly>]>) -> Self::P;
 }
 
 pub struct BaseFoldPCS<'a, F, C>
@@ -184,7 +187,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         true
     }
 
-    fn eval(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
+    fn eval_slow(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         _y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P
     {
         let d = self.code.d();
@@ -336,9 +339,10 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         })
     }
 
-    fn eval_fast(&self, com: &BaseFoldCommitment<R>, z: &[El<R>], y: El<R>, poly: &[El<R>])
-        -> BaseFoldProof<R>
+    fn eval(&self, com: &BaseFoldCommitment<R>, z: &[El<R>], y: El<R>,
+        polycoeff: Option<&[El<R>]>, polyeval: Option<&[El<R>]>) -> BaseFoldProof<R>
     {
+        assert!(polycoeff.is_some()); // Basefold inherent
         let d = self.code.d();
         let vc = self.polyring.indeterminate_count();
         let f = self.field();
@@ -346,8 +350,18 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         
         let fsclone = self.fs.borrow().clone();
 
+        let (polyrepr, isevals) = if polyeval.is_some() {
+            (polyeval.unwrap(), true)
+        } else {
+            // NOTE: should actually be faster to compute evals here and continue with evals
+            // but not necessarily in blind setting
+            (polycoeff.unwrap(), false)
+        };
+
         let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
-        let mut hunivar = sumcheck_sum_basefold(&unipolyring, poly, z, &[], Some(f.clone_el(&y)));
+        let mut hunivar = sumcheck_sum_basefold(&unipolyring, polyrepr, isevals, z, &[],
+            Some(f.clone_el(&y)));
+        // let mut hunivar = sumcheck_sum_basefold(&unipolyring, polyrepr, isevals, z, &[], None);
         polys.push(hunivar);
 
         let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
@@ -372,14 +386,23 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
             challvec.insert(0, chall);
             if dind != 0 {
                 let tmpsum = unipolyring.evaluate(&polys[d - 1 - dind], &challvec[0], self.coeffring().identity());
-                hunivar = sumcheck_sum_basefold(&unipolyring, poly, z, &challvec, Some(tmpsum));
+                hunivar = sumcheck_sum_basefold(&unipolyring, polyrepr, isevals, z, &challvec,
+                    Some(tmpsum));
+                // hunivar = sumcheck_sum_basefold(&unipolyring, polyrepr, isevals, z, &challvec,
+                //     None);
                 polys.push(hunivar);
             }
         }
     
         assert!(self.code.k(0).ilog2() as usize == vc - d);
         if self.code.k(0) > 1 {
-            last = evaluate_at_fromcoeff(&f, vc, &challvec, poly);
+            last = if isevals {
+                let mut tmp = evaluate_at_fromevals(&f, vc, &challvec, polyrepr);
+                evals_to_coeffs_inplace(&f, vc - d, &mut tmp);
+                tmp
+            } else {
+                evaluate_at_fromcoeff(&f, vc, &challvec, polyrepr)
+            }
         }
 
         self.fs.replace(fsclone);
@@ -390,7 +413,6 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
             sumcheck_last: last
         }
     }
-    
 }
 
 
@@ -429,39 +451,45 @@ pub fn basefold_evalscalars<'a, F>(field: &'a F, z: &'a [El<F>], challenges: &'a
 }
 
 
-// assumes that coeffs belong to multilinear polynomial
-// O(NlogN) time, O(logN) space
+// assumes that polyrepr are either coeffs or evals belong to multilinear polynomial
+// O(N) time, O(logN) space if isevals == true (NOTE: called logN times from evals)
+// O(NlogN) time, O(logN) space if isevals == false
 // assumes polynomial is of the basefold form
-pub fn sumcheck_sum_basefold<F>(upolyring: &DensePolyRing<F>,
-    coeff: &[El<F>], z: &[El<F>], challenges: &[El<F>], sum: Option<El<F>>) -> El<DensePolyRing<F>>
+pub fn sumcheck_sum_basefold<F>(upolyring: &DensePolyRing<F>, polyrepr: &[El<F>], isevals: bool,
+    z: &[El<F>], challenges: &[El<F>], sum: Option<El<F>>) -> El<DensePolyRing<F>>
     where F: RingStore<Type: Field>
 {
     let field = upolyring.get_ring().base_ring();
     let d = z.len();
-    assert!(1 << d == coeff.len());
+    assert!(1 << d == polyrepr.len());
     let i = challenges.len();
     let dmini = d - i;
 
     let mut scalars = basefold_evalscalars(field, z, challenges, dmini).collect::<Vec<_>>();
-    evalscalars_to_coeffscalars(field, d - 1, &mut scalars);
+    if !isevals { evalscalars_to_coeffscalars(field, d - 1, &mut scalars); }
 
-    let coeffiter1 = SCMultilinearIterator::new(coeff, dmini, i, false);
-    let tmp1 = sum_over_hypercube_withscalars(field, scalars.iter(), coeffiter1);
+    let iter1 = SCMultilinearIterator::new(polyrepr, dmini, i, false);
+    let tmp1 = sum_over_hypercube_withscalars(field, scalars.iter(), iter1);
 
     let zdmini = &z[dmini - 1];
     let tmp0 = if let Some(sum) = sum {
-        field.sub_ref_fst(&sum, field.mul_ref(&tmp1, &zdmini)) // this is fhe-friendly
+        // this is fhe-friendly
+        let t = field.sub_ref_fst(&sum, field.mul_ref(&tmp1, &zdmini));
+        if !isevals { t } else { field.div(&t, &field.sub_ref_snd(field.one(), &zdmini)) }
     } else {
-        let coeffiter0 = SCMultilinearIterator::new(coeff, dmini, i, true);
-        sum_over_hypercube_withscalars(field, scalars.iter(), coeffiter0)
+        let iter0 = SCMultilinearIterator::new(polyrepr, dmini, i, true);
+        sum_over_hypercube_withscalars(field, scalars.iter(), iter0)
     };
 
     let oneminz = field.sub_ref_snd(field.one(), zdmini);
     let twozminone = field.sub(field.get_ring().mul_int_ref(zdmini, 2), field.one());
+    let threezmintwo = field.sub(field.get_ring().mul_int_ref(zdmini, 3), field.int_hom().map(2));
+    let tmpsub = field.sub_ref(&tmp1, &tmp0);
+    let (screpr, sumrepr) = if !isevals { (&twozminone, &tmp1) } else { ( &threezmintwo, &tmpsub) };
     upolyring.from_terms([
         (field.mul_ref(&oneminz, &tmp0), 0),
-        (field.add(field.mul_ref(&twozminone, &tmp0), field.mul_ref(&oneminz, &tmp1)), 1),
-        (field.mul_ref(&twozminone, &tmp1), 2),
+        (field.add(field.mul_ref(screpr, &tmp0), field.mul_ref(&oneminz, &tmp1)), 1),
+        (field.mul_ref(&twozminone, sumrepr), 2),
     ])
 }
 
@@ -477,7 +505,7 @@ mod tests {
     use feanor_math::rings::field::AsField;
 
     use crate::util::gen_vector;
-    use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube};
+    use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube, coeffs_to_evals_inplace};
 
     const VREP: usize = 100;
 
@@ -521,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_basefoldpcs() {
+    fn test_basefoldpcs_slow() {
         
         let field = Zn::new(65537).as_field().ok().unwrap();
         pub type FieldImpl = AsField<Zn>;
@@ -542,7 +570,7 @@ mod tests {
         let com = bf.commit(&randomcoeffs);
 
         let zvec: Vec<_> = z.into_iter().collect();
-        let proof = bf.eval(&com, &zvec, field.clone_el(&y), &poly);
+        let proof = bf.eval_slow(&com, &zvec, field.clone_el(&y), &poly);
 
         assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof))
     }
@@ -577,8 +605,9 @@ mod tests {
             unipolyring.evaluate(&hd, &field.one(), field.identity())
         ), &sum);
 
-        let mut hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, &zvec, &[], Some(sum));
-        // let mut hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, &zvec, &[], None);
+        let mut hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, false, &zvec, &[],
+            Some(sum));
+        // let mut hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, false, &zvec, &[], None);
         assert_el_eq!(field, &field.add(
             unipolyring.evaluate(&hdfast, &field.zero(), field.identity()),
             unipolyring.evaluate(&hdfast, &field.one(), field.identity())
@@ -598,8 +627,9 @@ mod tests {
                 unipolyring.evaluate(&hd, &field.one(), field.identity())
             ), &sum);
             rvec.insert(0, r);
-            hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, &zvec, &rvec, Some(sum));
-            //hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, &zvec, &rvec, None);
+            hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, false, &zvec, &rvec,
+                Some(sum));
+            //hdfast = sumcheck_sum_basefold(&unipolyring, &randomcoeffs, false, &zvec, &rvec, None);
             assert_el_eq!(unipolyring, hd, hdfast);
         }
     }
@@ -615,7 +645,7 @@ mod tests {
         let field = Zn::new(65537).as_field().ok().unwrap();
         pub type FieldImpl = AsField<Zn>;
 
-        let N = 10;
+        let N = 14;
         let k0 = 2;
         let c = 2;
         let bf = BaseFoldPCS::new(&field, N, k0, c, VREP);
@@ -631,9 +661,14 @@ mod tests {
         let com = bf.commit(&randomcoeffs);
 
         let zvec: Vec<_> = z.into_iter().collect();
-        let proof = bf.eval_fast(&com, &zvec, y, &randomcoeffs);
+        // let proof1 = bf.eval(&com, &zvec, y, Some(&randomcoeffs), None);
 
-        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof))
+        let mut evals = randomcoeffs.iter().map(|el| field.clone_el(el)).collect::<Vec<_>>();
+        coeffs_to_evals_inplace(&field, N, &mut evals);
+        let proof2 = bf.eval(&com, &zvec, y, Some(&randomcoeffs), Some(&evals));
+
+        // assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof1));
+        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof2));
     }
 
 }

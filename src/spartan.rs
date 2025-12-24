@@ -381,8 +381,8 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
             let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, &self.base.piop.zcoeff);
             debug_assert!(ring.eq_el(&y, &ev[0]));
         }
-        let proof = self.base.piop.pcs.eval_fast(&self.base.piop.com, &rX,
-            ring.clone_el(&y), &self.base.piop.zcoeff);
+        let proof = self.base.piop.pcs.eval(&self.base.piop.com, &rX,
+            ring.clone_el(&y), Some(&self.base.piop.zcoeff), None);
         let clonedy = ring.clone_el(&y);
         self.base.piop.pcs.verify(self.base.piop.com, &rX, clonedy, &self.base.piop.zcoeff, proof)
     }

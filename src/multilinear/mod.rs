@@ -193,14 +193,25 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
     }
 }
 
-
-pub fn evaluate_at_fromevals<F>(field: &F, at: &[El<F>], evals: &[El<F>]) -> El<F>
+// TODO: remove redundancy in following two functions
+pub fn evaluate_at_fromevals<F>(field: &F, logsize: usize, at: &[El<F>], evals: &[El<F>])
+    -> Vec<El<F>>
     where F: FieldStore<Type: Field>
 {
-    assert!(evals.len() == 1 << at.len());
+    assert!(logsize > 0);
+    assert!(1 << logsize == evals.len());
+    // if evals.len() > 1 << at.len() then we evaluate the last at.len() variables
+    assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
+
+    let reslen = 1 << (logsize - at.len());
+    let mut res = gen_vector::<El<F>>(|| field.zero(), reslen);
     let eq = MultilinearBasisEvals::new(field, at);
-    evals.iter().zip(eq).fold(field.zero(), |acc, (ei, eqi)|
-        field.add(acc, field.mul_ref_fst(ei, eqi)))
+
+    evals.chunks_exact(reslen).zip(eq).for_each(|(evalchunk, eqi)|
+        res.iter_mut().zip(evalchunk).for_each(|(rsi, chunki)|
+            *rsi = field.add_ref_fst(rsi, field.mul_ref(chunki, &eqi))));
+    res
 }
 
 #[instrument(skip_all)]
@@ -208,10 +219,11 @@ pub fn evaluate_at_fromevals_inplace<F>(field: &F, logsize: usize, at: &[El<F>],
     where F: FieldStore<Type: Field>
 {
     assert!(logsize > 0);
-    assert!(at.len() > 0);
     assert!(1 << logsize == evals.len());
     // if evals.len() > 1 << at.len() then we evaluate the last at.len() variables
-    assert!(evals.len() >= (1 << at.len()));
+    assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
+
     let reslen = 1 << (logsize - at.len());
     let mut eq = MultilinearBasisEvals::new(field, at);
     let first = eq.next().unwrap();
@@ -230,6 +242,7 @@ pub fn evaluate_at_fromcoeff<R>(ring: &R, logsize: usize, at: &[El<R>], coeff: &
     assert!(1 << logsize == coeff.len());
     // if size != 1 << at.len() then we evaluate the last at.len() variables
     assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
     
     let reslen = 1 << (logsize - at.len());
     let mut res = gen_vector::<El<R>>(|| ring.zero(), reslen);
@@ -264,7 +277,7 @@ pub fn sum_over_hypercube_withscalars<'a, R, I, J>(ring: &'a R, scalars: I, coef
 }
 
 
-// helper for sum_over_hypercube_fromcoeff_withscalars
+// helper for sum_over_hypercube_withscalars
 pub fn evalscalars_to_coeffscalars<'a, R>(ring: &'a R, logsize: usize, scalars: &mut [El<R>])
     where R: RingStore
 {
