@@ -34,7 +34,7 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
     {
         Self { eval01, points, evals } }
 
-    fn at_negone(field: &F, atzero: &El<F>, atone: &El<F>) -> El<F> {
+    fn degone_at_negone(field: &F, atzero: &El<F>, atone: &El<F>) -> El<F> {
         field.sub_ref_snd(field.get_ring().mul_int_ref(atzero, 2), atone)
     }
     
@@ -46,12 +46,9 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
         &self.eval01[1]
     }
 
-    #[instrument(skip_all)]
     pub fn at(&self, field: &F, int: i32) -> El<F> {
         match int {
             0 | 1 => field.clone_el(&self.eval01[int as usize]),
-            -1 => PolyEvals::<F, M>::at_negone(field, self.at_zero(), self.at_one()),
-            2 => PolyEvals::<F, M>::at_negone(field, self.at_one(), self.at_zero()),
             _ => {
                 if let Some(eval) = self.points.iter().enumerate().find_map(|(i, p)|
                     (*p == int).then_some(&self.evals[i]))
@@ -60,11 +57,22 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
         }
     }
 
+    #[instrument(skip_all)]
+    pub fn degone_at(&self, field: &F, int: i32) -> El<F> {
+        debug_assert!(M == 0);
+        match int {
+            -1 => PolyEvals::<F, M>::degone_at_negone(field, self.at_zero(), self.at_one()),
+            2 => PolyEvals::<F, M>::degone_at_negone(field, self.at_one(), self.at_zero()),
+            _ => self.at(field, int)
+        }
+    }
+
     fn get_points(&self) -> impl Iterator<Item = &i32> {
         [0, 1].iter().chain(self.points.iter())
     }
 
-    fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
+    // TODO: make private again
+    pub fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
         self.eval01.iter().chain(self.evals.iter())
     }
 
@@ -80,7 +88,7 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
                     invdenomacc * (points[i] - *p)
                 )} else { (nomacc, invdenomacc) }
             );
-        field.div(&nom, &inthom.map(invdenom))
+            field.div(&nom, &inthom.map(invdenom))
         })
     }
 
@@ -181,7 +189,7 @@ pub trait Sumcheck<const D: usize, const N: usize>
             other_evals.iter_mut().zip(other_points.iter()).for_each(|(eval, point)| {
                 let wspi = (0..N).map(|k| {
                     PolyEvals::new(core::array::from_fn(|l| ring.clone_el(&splitws[2*k + l][j])),
-                        [], []).at(ring, *point)
+                        [], []).degone_at(ring, *point)
                 }).collect_vec();
                 debug_assert!(wspi.len() == N);
                 ring.add_assign(eval, Self::compute_term(ring,
@@ -203,7 +211,7 @@ pub trait Sumcheck<const D: usize, const N: usize>
         ((0..self.get_base().varcount()).all(|_| {
             // println!("================== Round {i}");
             let hdi = self.compute_round(&challvec, None);
-            // let hdi = self.compute_round(ring, &challvec, Some(ring.clone_el(&tmpsum)));
+            // let hdi = self.compute_round(&challvec, Some(ring.clone_el(&tmpsum)));
             // {
             //     let ws = self.get_workspace();
             //     ws.iter().enumerate().for_each(|(i, v)| {

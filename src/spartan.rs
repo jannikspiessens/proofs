@@ -49,9 +49,11 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
         let vc_cols = z.len().ilog2() as usize;
         let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
         evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
+
         // TODO: set reasonable parameters here
         let k0 = 1;
         let c = 8;
+
         let pcs = BaseFoldPCS::new(field, vc_cols, k0, c, ver_rep);
         let com = pcs.commit(&zcoeff);
 
