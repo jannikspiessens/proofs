@@ -10,10 +10,6 @@ use feanor_math::rings::multivariate::{
     MultivariatePolyRingStore,
     multivariate_impl::MultivariatePolyRingImpl
 };
-use feanor_math::rings::poly::{
-    PolyRingStore,
-    dense_poly::DensePolyRing
-};
 
 use crate::multilinear::{
     sum_over_hypercube, evaluate_at_fromevals_inplace
@@ -32,7 +28,8 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
 {
     pub fn new(eval01: [El<F>; 2], points: [i32; M], evals: [El<F>; M]) -> Self
     {
-        Self { eval01, points, evals } }
+        Self { eval01, points, evals }
+    }
 
     fn degone_at_negone(field: &F, atzero: &El<F>, atone: &El<F>) -> El<F> {
         field.sub_ref_snd(field.get_ring().mul_int_ref(atzero, 2), atone)
@@ -71,8 +68,7 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
         [0, 1].iter().chain(self.points.iter())
     }
 
-    // TODO: make private again
-    pub fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
+    fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
         self.eval01.iter().chain(self.evals.iter())
     }
 
@@ -103,7 +99,20 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
     pub fn print(&self, field: &F) {
         self.get_evals().for_each(|eval| field.println(eval))
     }
+
+    pub fn clone(&self, field: &F) -> Self {
+        PolyEvals::new(
+            core::array::from_fn(|i| field.clone_el(&self.eval01[i])),
+            self.points.clone(),
+            core::array::from_fn(|i| field.clone_el(&self.evals[i]))
+        )
+    }
+
+    pub fn eq(&self, field: &F, other: &Self) -> bool {
+        (0..M as i32).all(|x| field.eq_el(&self.at(field, x), &other.at(field, x)))
+    }
 }
+
 
 // D: degree of the product sumcheck
 pub trait SumcheckBase<const D: usize>
@@ -138,8 +147,10 @@ pub trait Sumcheck<const D: usize, const N: usize>
     fn compute_term(ring: &SCF<Self,D,N>, at: [&El<SCF<Self,D,N>>; N], scalar: &El<SCF<Self,D,N>>)
         -> El<SCF<Self,D,N>>;
 
-    fn check_eval(self, rX: Vec<El<SCF<Self,D,N>>>) -> bool;
+    fn check_eval(&self, rX: Vec<El<SCF<Self,D,N>>>) -> bool;
 
+    // TODO: first round could simply use reference to evals, then second round initializes the
+    // workspace. This way we don't have to copy the full evals vector from a reference first
     fn compute_round(&self, challs: &[El<SCF<Self,D,N>>],
         sum: Option<El<SCF<Self,D,N>>>) -> PolyEvals<SCF<Self,D,N>, {D - 1}>
     {
@@ -244,42 +255,31 @@ pub trait Sumcheck<const D: usize, const N: usize>
 }
 
 
-pub fn sumcheck_sum<F>(mpolyring: &MultivariatePolyRingImpl<F>, upolyring: &DensePolyRing<F>,
-    poly: &El<MultivariatePolyRingImpl<F>>, freevarind: usize) -> El<DensePolyRing<F>>
+pub fn sumcheck_sum<F, const M: usize>(mpolyring: &MultivariatePolyRingImpl<F>,
+    poly: &El<MultivariatePolyRingImpl<F>>, freevarind: usize, otherevalpoints: [i32; M])
+    -> PolyEvals<F,M>
     where F: FieldStore<Type: Field>
 {
     assert!(mpolyring.appearing_indeterminates(poly).into_iter().all(|(varind, _)| varind <= freevarind));
     let maxdeg =  mpolyring.appearing_indeterminates(poly).into_iter().map(|(_, exp)| exp).max().unwrap();
+    assert!(maxdeg == M + 1);
     assert!(maxdeg <= 2);
     let field = mpolyring.get_ring().base_ring();
     let sufflen = mpolyring.indeterminate_count() - freevarind;
 
-    let mut suffix0 = vec![field.zero()];
-    suffix0.extend((0..(sufflen-1)).map(|_| field.zero()));
-    let c0 = sum_over_hypercube(mpolyring, poly, freevarind, &suffix0);
+    let makesuffix = |at: El<F>| {
+        let mut suffix = vec![at];
+        suffix.extend((0..(sufflen-1)).map(|_| field.zero()));
+        suffix
+    };
 
-    let mut suffix1 = vec![field.one()];
-    suffix1.extend((0..(sufflen-1)).map(|_| field.zero()));
-    let c1 = sum_over_hypercube(mpolyring, poly, freevarind, &suffix1);
+    let c0 = sum_over_hypercube(mpolyring, poly, freevarind, &makesuffix(field.zero()));
+    let c1 = sum_over_hypercube(mpolyring, poly, freevarind, &makesuffix(field.one()));
 
-    if maxdeg == 1 {
-        let tmp1 = field.sub_ref_snd(c1, &c0);
-        upolyring.from_terms([(c0, 0), (tmp1, 1)])
-    } else if maxdeg == 2 {
-        let mut suffix2 = vec![field.int_hom().map(2)];
-        suffix2.extend((0..(sufflen-1)).map(|_| field.zero()));
-        let c2 = sum_over_hypercube(mpolyring, poly, freevarind, &suffix2);
-
-        let mut tmp1 = field.get_ring().mul_int_ref(&c1, 2);
-        tmp1 = field.sub(tmp1, field.div(&field.get_ring().mul_int_ref(&c0, 3), &field.int_hom().map(2)));
-        tmp1 = field.sub(tmp1, field.div(&c2, &field.int_hom().map(2)));
-        let mut tmp2 = field.div(&c0, &field.int_hom().map(2));
-        tmp2 = field.sub(tmp2, c1);
-        tmp2 = field.add(tmp2, field.div(&c2, &field.int_hom().map(2)));
-        upolyring.from_terms([(c0, 0), (tmp1, 1), (tmp2, 2)])
-    } else {
-        panic!("sumcheck_sum only implemented for products of two multilinear polynomials");
-    }
+    PolyEvals::new([c0, c1], otherevalpoints, core::array::from_fn(|i|
+        sum_over_hypercube(mpolyring, poly, freevarind,
+            &makesuffix(field.int_hom().map_ref(&otherevalpoints[i])))
+    ))
 }
 
 
@@ -422,25 +422,18 @@ mod tests {
         
         let sum = sum_over_hypercube(&polyring, &poly, N, &[]);
 
-        let unipolyring = DensePolyRing::new(field.clone(), "X");
-        let mut hd = sumcheck_sum(&polyring, &unipolyring, &poly, N - 1);
+        let mut hd = sumcheck_sum(&polyring, &poly, N - 1, [2]);
 
-        assert_el_eq!(field, &field.add(
-            unipolyring.evaluate(&hd, &field.zero(), field.identity()),
-            unipolyring.evaluate(&hd, &field.one(), field.identity())
-        ), &sum);
+        assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
 
         for ind in 1..=N-1 {
             //println!("tested: {}", ind - 1);
             let r = field.random_element(rand::random::<u64>);
             poly = polyring.specialize(&poly, N - ind,
                 &polyring.create_term(field.clone_el(&r), polyring.create_monomial((0..N).map(|_| 0))));
-            let sum = unipolyring.evaluate(&hd, &r, field.identity());
-            hd = sumcheck_sum(&polyring, &unipolyring, &poly, N - ind - 1);
-            assert_el_eq!(field, &field.add(
-                unipolyring.evaluate(&hd, &field.zero(), field.identity()),
-                unipolyring.evaluate(&hd, &field.one(), field.identity())
-            ), &sum);
+            let sum = hd.interp(&field, &r);
+            hd = sumcheck_sum(&polyring, &poly, N - ind - 1, [2]);
+            assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
         }
     }
 }

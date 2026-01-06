@@ -12,10 +12,6 @@ use feanor_math::rings::multivariate::{
     MultivariatePolyRingStore,
     multivariate_impl::MultivariatePolyRingImpl
 };
-use feanor_math::rings::poly::{
-    PolyRingStore,
-    dense_poly::DensePolyRing
-};
 
 use crate::util::{CoeffRing, Coeff, FiatShamirSim};
 use crate::codes::{
@@ -25,11 +21,11 @@ use crate::codes::{
 use crate::multilinear::{
     MultilinearBasis, MultilinearBasisEvals,
     get_hypercube_coeffs, evals_to_coeffs_inplace,
-    evaluate_at_fromcoeff, evaluate_at_fromevals_inplace, evaluate_at_fromevals,
+    evaluate_at_fromcoeff, evaluate_at_fromevals,
     sum_over_hypercube_withscalars, evalscalars_to_coeffscalars,
     sumcheck::{
         SumcheckBase, Sumcheck,
-        sumcheck_sum,
+        sumcheck_sum, PolyEvals,
         SCMultilinearIterator
     }
 };
@@ -39,7 +35,7 @@ pub trait Proof {}
 
 pub trait Commitment {}
 
-pub trait MultilinearPCS {
+pub trait MultilinearPCS<'a> {
 
     type Poly: MultivariatePolyRingStore<Type: MultivariatePolyRing>;
     type C: Commitment;
@@ -47,11 +43,11 @@ pub trait MultilinearPCS {
 
     fn polyring(&self) -> &Self::Poly;
 
-    fn coeffring(&self) -> &CoeffRing<Self::Poly> {
+    fn coeffring<'b>(&'b self) -> &'b CoeffRing<Self::Poly>
+        where 'a: 'b
+    {
         self.polyring().get_ring().base_ring()
     }
-
-    fn get_unipolyring(&self) -> DensePolyRing<CoeffRing<Self::Poly>>;
 
     fn get_challenge(&self) -> Coeff<Self::Poly>;
 
@@ -62,28 +58,56 @@ pub trait MultilinearPCS {
     fn eval_slow(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P;
 
-    fn verify(&self, com: Self::C, z: &[Coeff<Self::Poly>],
+    fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool;
 
-    fn eval(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
-        y: Coeff<Self::Poly>, polycoeff: Option<&[Coeff<Self::Poly>]>,
-        polyeval: Option<&[Coeff<Self::Poly>]>) -> Self::P;
+    fn eval(&'a self, com: &Self::C, z: Vec<Coeff<Self::Poly>>,
+        y: Coeff<Self::Poly>, polycoeff: Option<&'a[Coeff<Self::Poly>]>,
+        polyeval: Option<&'a[Coeff<Self::Poly>]>) -> Self::P;
 }
 
-pub struct BaseFoldPCS<'a, F, C>
-    where F: RingStore<Type: Field>, C: FoldableCode<R = F>
+
+pub struct BaseFoldCommitment<R: RingStore>{
+    pub code_el: Vec<El<R>>
+}
+impl<R: RingStore> Commitment for BaseFoldCommitment<R>{}
+
+pub struct BaseFoldProof<R: RingStore<Type: Field>> {
+    pub code_els: Vec<Vec<El<R>>>,
+    pub sumcheck_els: Vec<PolyEvals<R, 1>>,
+    pub sumcheck_last: Vec<El<R>>
+}
+
+impl<R: RingStore<Type: Field>> BaseFoldProof<R> {
+    pub fn clone(&self, ring: &R) -> Self {
+        Self {
+            code_els: self.code_els.iter().map(|v|
+                v.iter().map(|el| ring.clone_el(el)).collect()).collect(),
+            sumcheck_els: self.sumcheck_els.iter().map(|poly| poly.clone(ring)).collect(),
+            sumcheck_last: self.sumcheck_last.iter().map(|el| ring.clone_el(el)).collect()
+        }
+    }
+}
+
+impl<R: RingStore<Type: Field>> Proof for BaseFoldProof<R>{}
+
+
+// type alias
+type BSCF<'a, SC> = <SC as BaseFoldSumcheck<'a>>::F;
+
+pub struct BaseFoldPCS<'a, C, SC>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>
 {
- fs: RefCell<FiatShamirSim<'a, F>>,
-    polyring: MultivariatePolyRingImpl<F>,
+    fs: RefCell<FiatShamirSim<'a, BSCF<'a, SC>>>,
+    polyring: MultivariatePolyRingImpl<BSCF<'a, SC>>,
     code: C,
     ver_rep: usize,
-    // time_efficient: bool // TODO: use this
 }
 
-impl<'a, F, C> BaseFoldPCS<'a, F, C>
-    where F: RingStore<Type: Field>, C: FoldableCode<R = F>
+impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>
 {
-    pub fn field(&self) -> &F {
+    pub fn field(&self) -> &BSCF<'a, SC> {
         self.code.ring()
     }
 
@@ -102,8 +126,9 @@ impl<'a, F, C> BaseFoldPCS<'a, F, C>
     }
 }
 
-impl<'a, F, C> BaseFoldPCS<'a, F, C>
-    where F: RingStore<Type: Field + FiniteRing>, C: FoldableCode<R = F>
+impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>,
+          <BSCF<'a, SC> as RingStore>::Type: FiniteRing
 {
     pub fn reset_fs(&self) {
         self.fs.borrow_mut().reset()
@@ -111,10 +136,10 @@ impl<'a, F, C> BaseFoldPCS<'a, F, C>
 }
 
 
-impl<'a, R> BaseFoldPCS<'a, R, RSFoldableCode<'a, R>>
-    where R: RingStore<Type: Field + FiniteRing> + Clone
+impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
+    where F: RingStore<Type: Field + FiniteRing> + Clone, SC: BaseFoldSumcheck<'a, F = F>
 {
-    pub fn new(field: &'a R, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
+    pub fn new(field: &'a F, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     {
         assert!(k0.is_power_of_two());
 
@@ -130,52 +155,22 @@ impl<'a, R> BaseFoldPCS<'a, R, RSFoldableCode<'a, R>>
             fs,
             polyring, 
             code,
-            ver_rep,
-            // time_efficient
+            ver_rep
         }
     }
 
 }
 
-pub struct BaseFoldCommitment<R: RingStore>{
-    // TODO: remove these pubs
-    pub code_el: Vec<El<R>>
-}
-impl<R: RingStore> Commitment for BaseFoldCommitment<R>{}
-
-pub struct BaseFoldProof<R: RingStore> {
-    // TODO: remove these pubs
-    pub code_els: Vec<Vec<El<R>>>,
-    pub sumcheck_els: Vec<El<DensePolyRing<R>>>,
-    pub sumcheck_last: Vec<El<R>>
-}
-
-impl<R: RingStore> BaseFoldProof<R> {
-    pub fn clone(&self, ring: &R, polyring: &DensePolyRing<R>) -> Self {
-        Self {
-            code_els: self.code_els.iter().map(|v|
-                v.iter().map(|el| ring.clone_el(el)).collect()).collect(),
-            sumcheck_els: self.sumcheck_els.iter().map(|poly| polyring.clone_el(poly)).collect(),
-            sumcheck_last: self.sumcheck_last.iter().map(|el| ring.clone_el(el)).collect()
-        }
-    }
-}
-
-impl<R: RingStore> Proof for BaseFoldProof<R>{}
-
-impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
-    where R: RingStore<Type: Field + FiniteRing> + Clone, C: FoldableCode<R = R>
+impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>,
+          BSCF<'a, SC>: Clone, <BSCF<'a, SC> as RingStore>::Type: FiniteRing
 {
-    type Poly = MultivariatePolyRingImpl<R>;
-    type C = BaseFoldCommitment<R>;
-    type P = BaseFoldProof<R>;
+    type Poly = MultivariatePolyRingImpl<BSCF<'a, SC>>;
+    type C = BaseFoldCommitment<BSCF<'a, SC>>;
+    type P = BaseFoldProof<BSCF<'a, SC>>;
 
     fn polyring(&self) -> &Self::Poly {
         &self.polyring
-    }
-
-    fn get_unipolyring(&self) -> DensePolyRing<CoeffRing<Self::Poly>> {
-        DensePolyRing::new(self.coeffring().clone(), "X")
     }
 
     fn get_challenge(&self) -> Coeff<Self::Poly> {
@@ -199,26 +194,26 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         let vc = self.polyring().indeterminate_count();
         assert!(z.len() == vc);
         let f = self.field();
-        let unipolyring = self.get_unipolyring();
+        let otherpoints = [2];
 
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
+        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
         let eq = MultilinearBasis::new(f, &z).polynomial(&self.polyring);
         let mut wpoly = self.polyring.clone_el(poly);
         let mut scpoly = self.polyring.mul_ref_fst(poly, eq);
         //assert_el_eq!(self.coeffring(), sum_over_hypercube(&self.polyring, &scpoly, vc, &[]), y);
-        let mut hunivar = sumcheck_sum(&self.polyring, &unipolyring, &scpoly, vc - 1);
+        let mut hunivar = sumcheck_sum(&self.polyring, &scpoly, vc - 1, otherpoints);
         /*assert_el_eq!(self.coeffring(), &self.coeffring().add(
             unipolyring.evaluate(&hunivar, &self.coeffring().zero(), self.coeffring().identity()),
             unipolyring.evaluate(&hunivar, &self.coeffring().one(), self.coeffring().identity())
         ), &y);*/
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<R>> = Vec::with_capacity(
+        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
         
         for dind in (0..d).rev() {
@@ -242,7 +237,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
             if dind != 0 {
                 scpoly = self.polyring().specialize(&scpoly, curfreevc, &challconst);
                 //let tmpsum = unipolyring.evaluate(&polys[d - 1 - dind], &chall, self.coeffring().identity());
-                hunivar = sumcheck_sum(&self.polyring, &unipolyring, &scpoly, curfreevc - 1);
+                hunivar = sumcheck_sum(&self.polyring, &scpoly, curfreevc - 1, otherpoints);
                 /*assert_el_eq!(self.coeffring(), &self.coeffring().add(
                     unipolyring.evaluate(&hunivar, &self.coeffring().zero(), self.coeffring().identity()),
                     unipolyring.evaluate(&hunivar, &self.coeffring().one(), self.coeffring().identity())
@@ -266,7 +261,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         }
     }
 
-    fn verify(&self, com: Self::C, z: &[Coeff<Self::Poly>],
+    fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool
     {
         let d = self.code.d();
@@ -278,14 +273,13 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
 
         let mut challvec: Vec<Coeff<Self::Poly>> = Vec::with_capacity(d);
 
-        let unipolyring = self.get_unipolyring();
         let mut tmp = y;
 
         let mut topcode = &com.code_el;
         let mut mu = (0..self.ver_rep).map(|_|
             rand::random_range(0..self.code.n(d-1))).collect_vec();
 
-        self.open(&com, &poly) &&
+        self.open(com, &poly) &&
         proof.code_els.iter().zip(proof.sumcheck_els.iter()).enumerate().all(|(i, (code, poly))| {
             let chall = self.get_challenge();
 
@@ -305,11 +299,9 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
                 rescode &= self.code.G0code().is_code_element(&code);
             }
 
-            let respoly = self.coeffring().eq_el(&self.coeffring().add(
-                unipolyring.evaluate(poly, &self.coeffring().zero(), self.coeffring().identity()),
-                unipolyring.evaluate(poly, &self.coeffring().one(), self.coeffring().identity())
-            ), &tmp);
-            tmp = unipolyring.evaluate(poly, &chall, self.coeffring().identity());
+            let respoly = self.coeffring().eq_el(&tmp,
+                &self.coeffring().add(poly.at(self.coeffring(), 0), poly.at(self.coeffring(), 1)));
+            tmp = poly.interp(self.coeffring(), &chall);
 
             challvec.push(chall);
             rescode && respoly
@@ -344,37 +336,37 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         })
     }
 
-    // TODO: polycoeff shouldn't be an input when polyeval.is_some() since it isn't used in that
-    // case? but keep pcs general for any pcs
-    fn eval(&self, com: &BaseFoldCommitment<R>, z: &[El<R>], y: El<R>,
-        polycoeff: Option<&[El<R>]>, polyeval: Option<&[El<R>]>) -> BaseFoldProof<R>
+    // NOTE: if no polyeval is provided, this function will not compute polyeval from polycoeff,
+    // even though that would be the fastest method
+    // (but not necessarily in blind setting)
+    fn eval(&'a self, com: &Self::C, z: Vec<Coeff<Self::Poly>>,
+        y: Coeff<Self::Poly>, polycoeff: Option<&'a [Coeff<Self::Poly>]>,
+        polyeval: Option<&'a [Coeff<Self::Poly>]>) -> Self::P
     {
         assert!(polycoeff.is_some() || polyeval.is_some()); // one is needed for doing sumcheck
         let d = self.code.d();
         let vc = self.polyring.indeterminate_count();
         let f = self.field();
-        let unipolyring = self.get_unipolyring();
         
         let fsclone = self.fs.borrow().clone();
 
-        // NOTE: should actually be faster to compute evals here and continue with evals
-        // but not necessarily in blind setting
         let isevals = polyeval.is_some();
         let polyrepr = if let Some(unwr) = polyeval { unwr } else { polycoeff.unwrap() };
 
-        let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
-        let bsc = BaseFoldSumcheckSpaceEfficient::new(&unipolyring, polyrepr, isevals, z);
+        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
+
+        let bsc = SC::new(f, polyrepr, isevals, z);
         let mut hunivar = bsc.compute_round(&[], Some(f.clone_el(&y)));
         // let mut hunivar = bsc.compute_round(&[], None);
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<R>> = Vec::with_capacity(
+        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
 
-        let mut challvec: Vec<El<R>> = Vec::with_capacity(d - 1);
+        let mut challvec: Vec<El<BSCF<SC>>> = Vec::with_capacity(d - 1);
         
         for dind in (0..d).rev() {
             let chall = self.get_challenge();
@@ -389,7 +381,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
 
             challvec.insert(0, chall);
             if dind != 0 {
-                let tmpsum = unipolyring.evaluate(&polys[d - 1 - dind], &challvec[0], self.coeffring().identity());
+                let tmpsum = polys[d - 1 - dind].interp(self.coeffring(), &challvec[0]);
                 hunivar = bsc.compute_round(&challvec, Some(tmpsum));
                 // hunivar = bsc.compute_round(&challvec, None);
                 polys.push(hunivar);
@@ -400,7 +392,6 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         if self.code.k(0) > 1 {
             last = if isevals {
                 let mut tmp = evaluate_at_fromevals(&f, vc, &challvec, polyrepr);
-                // TODO: should I do this better?
                 evals_to_coeffs_inplace(&f, vc - d, &mut tmp);
                 tmp
             } else {
@@ -419,55 +410,51 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
 }
 
 
-// outputs f(a) where f(X) = interpolate((x, y1), (-x, y2))
-// (could possibly use feanor_math::algorithms::interpolate)
-pub fn interpdeg1<F>(field: &F, x: &El<F>, y1: &El<F>, y2: &El<F>, a: &El<F>) -> El<F>
-    where F: RingStore<Type: Field>
+pub trait BaseFoldSumcheck<'a>
 {
-    let mut tmpleft = field.add_ref(a, x);
-    let mut tmpright = field.sub_ref(x, a);
-    field.mul_assign_ref(&mut tmpleft, y1);
-    field.mul_assign_ref(&mut tmpright, y2);
-    field.div(
-        &field.add(tmpleft, tmpright),
-        &field.get_ring().mul_int_ref(x, 2)
-    )
+    type F: RingStore<Type: Field>;
+
+    fn new(field: &'a Self::F, polyrepr: &'a [El<Self::F>], isevals: bool, z: Vec<El<Self::F>>)
+        -> Self;
+
+    // TODO: ideally BaseFoldSumcheck is a subtrait of a Sumcheck trait that implements this
+    // but then we first need to implement a space-efficient Sumcheck trait
+    fn compute_round(&self, challs: &[El<Self::F>], sum: Option<El<Self::F>>)
+        -> PolyEvals<Self::F,1>;
 }
 
 
-struct BaseFoldSumcheckSpaceEfficient<'a, R>
+pub struct BaseFoldSumcheckSpaceEfficient<'a, R>
     where R: RingStore
 {
     field: &'a R,
     vc: usize,
-    unipolyring: &'a DensePolyRing<R>,
     polyrepr: &'a [El<R>],
     isevals: bool,
-    z: &'a [El<R>]
+    z: Vec<El<R>>
 }
 
-impl<'a, F> BaseFoldSumcheckSpaceEfficient<'a, F>
+impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckSpaceEfficient<'a, F>
     where F: RingStore<Type: Field>
 {
-    fn new(unipolyring: &'a DensePolyRing<F>, polyrepr: &'a [El<F>], isevals: bool, z: &'a [El<F>])
-        -> Self
+    type F = F;
+
+    fn new(field: &'a F, polyrepr: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
     {
         let vc = z.len();
         assert!(1 << vc == polyrepr.len());
-        let field = unipolyring.get_ring().base_ring();
-        Self { field, vc, unipolyring, polyrepr, isevals, z }
+        Self { field, vc, polyrepr, isevals, z }
     }
-
     // assumes that polyrepr are either coeffs or evals belong to multilinear polynomial
     // O(N) time, O(logN) space if isevals == true (NOTE: called logN times from evals)
     // O(NlogN) time, O(logN) space if isevals == false
     // assumes polynomial is of the basefold form
-    fn compute_round(&self, challenges: &[El<F>], sum: Option<El<F>>) -> El<DensePolyRing<F>> {
+    fn compute_round(&self, challenges: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
 
         let i = challenges.len();
         let vcmini = self.vc - i;
 
-        let mut scalars = basefold_evalscalars(self.field, self.z, challenges, vcmini).collect_vec();
+        let mut scalars = basefold_evalscalars(self.field, &self.z, challenges, vcmini).collect_vec();
         if !self.isevals { evalscalars_to_coeffscalars(self.field, self.vc - 1, &mut scalars); }
 
         let iter1 = SCMultilinearIterator::new(self.polyrepr, vcmini, i, false);
@@ -475,7 +462,6 @@ impl<'a, F> BaseFoldSumcheckSpaceEfficient<'a, F>
 
         let zvcmini = &self.z[vcmini - 1];
         let tmp0 = if let Some(sum) = sum {
-            // this is fhe-friendly
             let t = self.field.sub_ref_fst(&sum, self.field.mul_ref(&tmp1, &zvcmini));
             if !self.isevals { t } else {
                 self.field.div(&t, &self.field.sub_ref_snd(self.field.one(), &zvcmini)) }
@@ -484,6 +470,7 @@ impl<'a, F> BaseFoldSumcheckSpaceEfficient<'a, F>
             sum_over_hypercube_withscalars(self.field, scalars.iter(), iter0)
         };
 
+        // TODO: remove detour to coefficients
         let oneminz = self.field.sub_ref_snd(self.field.one(), zvcmini);
         let twozminone = self.field.sub(self.field.get_ring().mul_int_ref(zvcmini, 2),
             self.field.one());
@@ -492,17 +479,20 @@ impl<'a, F> BaseFoldSumcheckSpaceEfficient<'a, F>
         let tmpsub = self.field.sub_ref(&tmp1, &tmp0);
         let (screpr, sumrepr) = if !self.isevals {(&twozminone, &tmp1)}
             else {(&threezmintwo, &tmpsub)};
-        self.unipolyring.from_terms([
-            (self.field.mul_ref(&oneminz, &tmp0), 0),
-            (self.field.add(self.field.mul_ref(screpr, &tmp0),
-                self.field.mul_ref(&oneminz, &tmp1)), 1),
-            (self.field.mul_ref(&twozminone, sumrepr), 2)
-        ])
+
+        let c0 = self.field.mul_ref(&oneminz, &tmp0);
+        let c1 = self.field.add(self.field.mul_ref(screpr, &tmp0),
+            self.field.mul_ref(&oneminz, &tmp1));
+        let c2 = self.field.mul_ref(&twozminone, sumrepr);
+
+        let tmp = self.field.add_ref(&c0, &c2);
+        PolyEvals::new([c0, self.field.add_ref(&tmp, &c1)],
+            [-1], [self.field.sub_ref(&tmp, &c1)])
     }
 }
 
 
-// TODO: remove redundancy with time-efficient? only used in space-efficient algorithm
+// TODO: remove redundancy with others? only used in space-efficient algorithm
 pub fn basefold_evalscalars<'a, F>(field: &'a F, z: &'a [El<F>], challenges: &'a [El<F>],
     vcmini: usize) -> impl Iterator<Item = El<F>>
     where F: RingStore<Type: Field>
@@ -523,109 +513,33 @@ pub fn basefold_evalscalars<'a, F>(field: &'a F, z: &'a [El<F>], challenges: &'a
 }
 
 
-impl<'a, C, R> BaseFoldPCS<'a, R, C>
-    where R: RingStore<Type: Field + FiniteRing> + Clone, C: FoldableCode<R = R>
-{
-    // TODO: this is super redundant!
-    fn eval_te(&self, com: &BaseFoldCommitment<R>, z: &[El<R>], y: El<R>,
-         polyeval: &[El<R>]) -> BaseFoldProof<R>
-    {
-        let d = self.code.d();
-        let vc = self.polyring.indeterminate_count();
-        let f = self.field();
-        let unipolyring = self.get_unipolyring();
-        
-        let fsclone = self.fs.borrow().clone();
-
-        let cfrome_deg2 = |pv: Vec<&El<R>>| {
-            let c0 = f.clone_el(pv[0]);
-            let c2 = f.div(&f.sub(f.add_ref(pv[1], pv[2]),
-                f.get_ring().mul_int_ref(&c0, 2)), &f.int_hom().map(2));
-            let c1 = f.sub_ref_snd(f.sub_ref(pv[1], &c0), &c2);
-            unipolyring.from_terms([(c0, 0), (c1, 1), (c2, 2)])
-        };
-
-        let mut polys: Vec<El<DensePolyRing<R>>> = Vec::with_capacity(d);
-        let bsc = BaseFoldSumcheckTimeEfficient::new(&unipolyring, polyeval, z);
-        let mut hunivar = {
-            let pe = bsc.compute_round(&[], Some(f.clone_el(&y)));
-            // let pe = bsc.compute_round(&[], None);
-            cfrome_deg2(pe.get_evals().collect_vec())
-        };
-        polys.push(hunivar);
-
-        let mut proofcodes: Vec<Vec<El<R>>> = Vec::with_capacity(d);
-        let mut topcode = &com.code_el;
-
-        let mut last: Vec<El<R>> = Vec::with_capacity(
-            if self.code.k(0) == 1 {0} else {self.code.k(0)});
-
-        let mut challvec: Vec<El<R>> = Vec::with_capacity(d - 1);
-        
-        for dind in (0..d).rev() {
-            let chall = self.get_challenge();
-
-            proofcodes.push({
-                let (l, r) = topcode.split_at(self.code.n(dind));
-                izip!(self.code.t(dind), l, r).map(|(ti, li, ri)|
-                    interpdeg1(f, ti, li, ri, &chall)
-                ).collect()
-            });
-            topcode = &proofcodes[d - 1 - dind];
-
-            challvec.insert(0, chall);
-            if dind != 0 {
-                let tmpsum = unipolyring.evaluate(&polys[d - 1 - dind], &challvec[0],
-                    self.coeffring().identity());
-
-                let mut hunivar = {
-                    let pe = bsc.compute_round(&challvec, Some(tmpsum));
-                    // let pe = bsc.compute_round(&[], None);
-                    cfrome_deg2(pe.get_evals().collect_vec())
-                };
-                polys.push(hunivar);
-            }
-        }
-    
-        assert!(self.code.k(0).ilog2() as usize == vc - d);
-        if self.code.k(0) > 1 {
-            last = evaluate_at_fromevals(&f, vc, &challvec, polyeval);
-            // TODO: should I do this better?
-            evals_to_coeffs_inplace(&f, vc - d, &mut last);
-        }
-
-        self.fs.replace(fsclone);
-
-        BaseFoldProof {
-            code_els: proofcodes,
-            sumcheck_els: polys,
-            sumcheck_last: last
-        }
-    }
-}
-
-
-struct BaseFoldSumcheckTimeEfficient<'a, R>
+pub struct BaseFoldSumcheckTimeEfficient<'a, R>
     where R: RingStore
 {
     field: &'a R,
     vc: usize,
     ws: RefCell<Vec<El<R>>>,
-    z: &'a [El<R>],
+    z: Vec<El<R>>,
     scalarstate: RefCell<El<R>>
 }
 
-impl<'a, F> BaseFoldSumcheckTimeEfficient<'a, F>
-    where F: RingStore
+impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckTimeEfficient<'a, F>
+    where F: RingStore<Type: Field + FiniteRing>
 {
-    fn new(unipolyring: &'a DensePolyRing<F>, evals: &'a [El<F>], z: &'a [El<F>])
-        -> Self
+    type F = F;
+
+    fn new(field: &'a F, evals: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
     {
+        assert!(isevals == true);
         let vc = z.len();
         assert!(1 << vc == evals.len());
-        let field = unipolyring.get_ring().base_ring();
+        // TODO: can we avoid this cloning?
         let ws = RefCell::new(evals.iter().map(|el| field.clone_el(el)).collect_vec());
         Self { field, vc, ws, z, scalarstate: RefCell::new(field.one()) }
+    }
+
+    fn compute_round(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
+        <BaseFoldSumcheckTimeEfficient<F> as Sumcheck<2, 1>>::compute_round(&self, challs, sum)
     }
 }
 
@@ -691,10 +605,26 @@ impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckTimeEfficient<'a, F>
         ring.mul_ref(scalar, &at[0])
     }
 
-    fn check_eval(self, rX: Vec<El<F>>) -> bool {
+    fn check_eval(&self, _rX: Vec<El<F>>) -> bool {
         // handled concurrently in the Basefold sumcheck
         unimplemented!()
     }
+}
+
+
+// outputs f(a) where f(X) = interpolate((x, y1), (-x, y2))
+// (could possibly use feanor_math::algorithms::interpolate)
+pub fn interpdeg1<F>(field: &F, x: &El<F>, y1: &El<F>, y2: &El<F>, a: &El<F>) -> El<F>
+    where F: RingStore<Type: Field>
+{
+    let mut tmpleft = field.add_ref(a, x);
+    let mut tmpright = field.sub_ref(x, a);
+    field.mul_assign_ref(&mut tmpleft, y1);
+    field.mul_assign_ref(&mut tmpright, y2);
+    field.div(
+        &field.add(tmpleft, tmpright),
+        &field.get_ring().mul_int_ref(x, 2)
+    )
 }
 
 
@@ -717,12 +647,12 @@ mod tests {
     fn test_basefolding() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type FieldImpl = AsField<Zn>;
+        type FieldImpl = AsField<Zn>;
 
         let N = 7;
         let k0 = 1;
         let c = 2;
-        let bf = BaseFoldPCS::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
         let vc = bf.polyring().indeterminate_count();
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
@@ -761,7 +691,7 @@ mod tests {
         let N = 5;
         let k0 = 2;
         let c = 2;
-        let bf = BaseFoldPCS::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
             field.random_element(rand::random::<u64>), 1 << N);
@@ -776,7 +706,7 @@ mod tests {
         let zvec: Vec<_> = z.into_iter().collect();
         let proof = bf.eval_slow(&com, &zvec, field.clone_el(&y), &poly);
 
-        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof))
+        assert!(bf.verify(&com, &zvec, y, &randomcoeffs, proof))
     }
 
     #[test]
@@ -801,23 +731,16 @@ mod tests {
         
         let sum = sum_over_hypercube(&polyring, &poly, N, &[]);
 
-        let unipolyring = DensePolyRing::new(field.clone(), "X");
-        let mut hd = sumcheck_sum(&polyring, &unipolyring, &poly, N - 1);
+        let mut hd = sumcheck_sum(&polyring, &poly, N - 1, [2]);
 
-        assert_el_eq!(field, &field.add(
-            unipolyring.evaluate(&hd, &field.zero(), field.identity()),
-            unipolyring.evaluate(&hd, &field.one(), field.identity())
-        ), &sum);
+        assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
 
-        let bsc = BaseFoldSumcheckSpaceEfficient::new(&unipolyring, &randomcoeffs, false, &zvec);
+        let bsc = BaseFoldSumcheckSpaceEfficient::new(&field, &randomcoeffs, false, zvec);
         let mut hdfast = bsc.compute_round(&[], Some(sum));
         // let mut hdfast = bsc.compute_round(&[], None);
         
-        assert_el_eq!(field, &field.add(
-            unipolyring.evaluate(&hdfast, &field.zero(), field.identity()),
-            unipolyring.evaluate(&hdfast, &field.one(), field.identity())
-        ), &sum);
-        assert_el_eq!(unipolyring, hd, hdfast);
+        assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
+        hd.eq(&field, &hdfast);
 
         let mut rvec: Vec<El<FieldImpl>> = vec![];
         for ind in 1..=N-1 {
@@ -825,16 +748,13 @@ mod tests {
             let r = field.random_element(rand::random::<u64>);
             poly = polyring.specialize(&poly, N - ind,
                 &polyring.create_term(field.clone_el(&r), polyring.create_monomial((0..N).map(|_| 0))));
-            let sum = unipolyring.evaluate(&hd, &r, field.identity());
-            hd = sumcheck_sum(&polyring, &unipolyring, &poly, N - ind - 1);
-            assert_el_eq!(field, &field.add(
-                unipolyring.evaluate(&hd, &field.zero(), field.identity()),
-                unipolyring.evaluate(&hd, &field.one(), field.identity())
-            ), &sum);
+            let sum = hd.interp(&field, &r);
+            hd = sumcheck_sum(&polyring, &poly, N - ind - 1, [2]);
+            assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
             rvec.insert(0, r);
             hdfast = bsc.compute_round(&rvec, Some(sum));
             // hdfast = bsc.compute_round(&rvec, None);
-            assert_el_eq!(unipolyring, hd, hdfast);
+            hd.eq(&field, &hdfast);
         }
     }
 
@@ -852,7 +772,8 @@ mod tests {
         let N = 14;
         let k0 = 2;
         let c = 2;
-        let bf = BaseFoldPCS::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
+        // let bf = BaseFoldPCS::<_, BaseFoldSumcheckTimeEfficient<_>>::new(&field, N, k0, c, VREP);
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
             field.random_element(rand::random::<u64>), 1 << N);
@@ -864,16 +785,14 @@ mod tests {
 
         let com = bf.commit(&randomcoeffs);
 
-        let zvec: Vec<_> = z.into_iter().collect();
-        // let proof1 = bf.eval(&com, &zvec, y, Some(&randomcoeffs), None);
+        let zvec = z.into_iter().collect_vec();
+        let clonedzvec= zvec.iter().map(|el| field.clone_el(el)).collect_vec();
 
         let mut evals = randomcoeffs.iter().map(|el| field.clone_el(el)).collect_vec();
         coeffs_to_evals_inplace(&field, N, &mut evals);
-        let proof2 = bf.eval(&com, &zvec, y, Some(&randomcoeffs), Some(&evals));
-        // let proof2 = bf.eval_te(&com, &zvec, y, &evals);
+        let proof = bf.eval(&com, zvec, y, Some(&randomcoeffs), Some(&evals));
 
-        // assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof1));
-        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof2));
+        assert!(bf.verify(&com, &clonedzvec, y, &randomcoeffs, proof));
     }
 
 }

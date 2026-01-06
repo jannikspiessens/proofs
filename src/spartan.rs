@@ -2,7 +2,6 @@ use itertools::{izip, Itertools};
 use std::cell::{RefMut, RefCell};
 
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
-use feanor_math::divisibility::DivisibilityRing;
 use feanor_math::rings::field::AsField;
 use feanor_math::field::Field;
 use feanor_math::ring::{RingStore, El};
@@ -12,7 +11,10 @@ use crate::{
     codes::foldablecodes::RSFoldableCode,
     basefold::{
         MultilinearPCS,
-        BaseFoldPCS
+        BaseFoldPCS,
+        BaseFoldSumcheck,
+        BaseFoldSumcheckSpaceEfficient,
+        BaseFoldSumcheckTimeEfficient
     },
     r1cs::R1CS,
     util::{gen_vector, Coeff, CoeffRing},
@@ -23,7 +25,7 @@ use crate::{
     }
 };
 
-pub struct SpartanPIOP<'a, PCS: MultilinearPCS>
+pub struct SpartanPIOP<'a, PCS: MultilinearPCS<'a>>
 {
     vc_rows: usize,
     vc_cols: usize,
@@ -34,19 +36,25 @@ pub struct SpartanPIOP<'a, PCS: MultilinearPCS>
     zB: RefCell<Vec<Coeff<PCS::Poly>>>,
     zC: RefCell<Vec<Coeff<PCS::Poly>>>,
     pcs: PCS,
+    zevals: Vec<Coeff<PCS::Poly>>,
     zcoeff: Vec<Coeff<PCS::Poly>>,
     com: PCS::C
 }
 
-impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
-    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
+impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
+    where F: RingStore + Clone, F::Type: Field + FiniteRing,
+          BSC: BaseFoldSumcheck<'a, F = F>
 {
-    pub fn new_extra(field: &'a AsField<R>, z: Vec<El<AsField<R>>>, r1cs: R1CS<'a, AsField<R>>,
-        zA: Vec<El<AsField<R>>>, zB: Vec<El<AsField<R>>>, zC: Vec<El<AsField<R>>>, ver_rep: usize)
-        -> Self
+    pub fn new_extra(field: &'a F, z: Vec<El<F>>, r1cs: R1CS<'a, F>,
+        zA: Vec<El<F>>, zB: Vec<El<F>>, zC: Vec<El<F>>, ver_rep: usize) -> Self
     {
         assert!(z.len().is_power_of_two());
         let vc_cols = z.len().ilog2() as usize;
+
+        // NOTE: not necessarily faster in blind setting with time-efficient Basefold sumcheck
+        let zevals = z.iter().map(|el| field.clone_el(el)).collect_vec();
+        // let zevals = Vec::new();
+
         let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
         evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
 
@@ -54,7 +62,8 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
         let k0 = 1;
         let c = 8;
 
-        let pcs = BaseFoldPCS::new(field, vc_cols, k0, c, ver_rep);
+        let pcs = BaseFoldPCS::<'a, RSFoldableCode<'a, F>, BSC>
+            ::new(field, vc_cols, k0, c, ver_rep);
         let com = pcs.commit(&zcoeff);
 
         let vc_rows = r1cs.A.rowlogsize();
@@ -71,13 +80,13 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
             zA: RefCell::new(zA),
             zB: RefCell::new(zB),
             zC: RefCell::new(zC),
+            zevals,
             zcoeff,
             com
         }
     }
 
-    pub fn new(ring: &'a AsField<R>, z: Vec<El<AsField<R>>>, r1cs: R1CS<'a, AsField<R>>,
-        ver_rep: usize) -> Self
+    pub fn new(ring: &'a F, z: Vec<El<F>>, r1cs: R1CS<'a, F>, ver_rep: usize) -> Self
     {
         let zA = r1cs.A.mul(&z);
         let zB = r1cs.B.mul(&z);
@@ -85,7 +94,7 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
         SpartanPIOP::new_extra(ring, z, r1cs, zA, zB, zC, ver_rep)
     }
 
-    pub fn proofsize(&self) -> usize {
+    pub fn proofsize(&'a self) -> usize {
         let rowchecksize = 4*self.vc_rows;
         let linchecksize = 3*self.vc_cols;
         let ZZbig: BigIntRing = BigIntRing::RING;
@@ -95,7 +104,7 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
     }
 }
     
-impl<'a, PCS: MultilinearPCS> SpartanPIOP<'a, PCS>
+impl<'a, PCS: MultilinearPCS<'a>> SpartanPIOP<'a, PCS>
 {
     pub fn field(&self) -> &CoeffRing<PCS::Poly> {
         self.pcs.coeffring()
@@ -125,17 +134,18 @@ impl<'a, PCS: MultilinearPCS> SpartanPIOP<'a, PCS>
 use rand::RngCore;
 use rand_seeder::{Seeder, SipRng};
 
-impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
-    where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
+impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
+    where F: RingStore + Clone, F::Type: Field + FiniteRing,
+          BSC: BaseFoldSumcheck<'a, F = F>
 {
-    pub fn random(field: &'a AsField<R>, vc: usize, vcrows: usize, ver_rep: usize) -> Self {
+    pub fn random(field: &'a F, vc: usize, vcrows: usize, ver_rep: usize) -> Self {
         let mut rng: SipRng = Seeder::from("SpartanPIOP").into_rng();
-        let mut z = gen_vector::<El<AsField<R>>>(||
+        let mut z = gen_vector::<El<F>>(||
             // field.random_element(rand::random::<u64>), 1 << vc);
             field.random_element(|| rng.next_u64()), 1 << vc);
         while z.iter().all(|zi| field.is_zero(zi)) {
             // z = gen_vector::<El<F>>(|| field.random_element(rand::random::<u64>), 1 << vc);
-            z = gen_vector::<El<AsField<R>>>(|| field.random_element(|| rng.next_u64()), 1 << vc);
+            z = gen_vector::<El<F>>(|| field.random_element(|| rng.next_u64()), 1 << vc);
         }
         let (r1cs, zA, zB, zC) = R1CS::random_from(field, &z, 1 << vcrows);
         SpartanPIOP::new_extra(field, z, r1cs, zA, zB, zC, ver_rep)
@@ -143,32 +153,32 @@ impl<'a, R> SpartanPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsFie
 }
 
 impl<'a, PCS> SpartanPIOP<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
-    pub fn execute(self) -> bool {
+    pub fn execute(&'a self) -> bool {
         let rowchecksum = self.field().zero();
         let rowcheck = SpartanRowcheck::for_piop(self);
         if let Some(rX) = rowcheck.execute(rowchecksum) {
-            println!("SpartanRowcheck complete!");
+            // println!("SpartanRowcheck complete!");
             rowcheck.check_eval(rX)
         } else { false }
     }
 }
 
 
-pub struct SpartanRowcheckBase<'a, PCS: MultilinearPCS> {
-    piop: SpartanPIOP<'a, PCS>,
+pub struct SpartanRowcheckBase<'a, PCS: MultilinearPCS<'a>> {
+    piop: &'a SpartanPIOP<'a, PCS>,
 }
 
-impl<'a, PCS: MultilinearPCS> SpartanRowcheckBase<'a, PCS>
+impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheckBase<'a, PCS>
 {
-    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self {
+    pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>) -> Self {
         Self { piop }
     }
 }
 
 impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type F = CoeffRing<PCS::Poly>;
 
@@ -188,9 +198,9 @@ impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
         [-1, 2]
     }
 
-    fn get_scalars<'b, 'c>(&'c self, challs: &'b [El<Self::F>])
-        -> impl Iterator<Item = (El<Self::F>, El<Self::F>)> + 'b
-        where 'c: 'b
+    fn get_scalars<'d, 'c>(&'c self, challs: &'d [El<Self::F>])
+        -> impl Iterator<Item = (El<Self::F>, El<Self::F>)> + 'd
+        where 'c: 'd
     {
         let field = self.piop.field();
         let vc = self.varcount();
@@ -208,23 +218,23 @@ impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
     }
 }
 
-pub struct SpartanRowcheck<'a, PCS: MultilinearPCS> {
+pub struct SpartanRowcheck<'a, PCS: MultilinearPCS<'a>> {
     base: SpartanRowcheckBase<'a, PCS>,
 }
 
-impl<'a, PCS: MultilinearPCS> SpartanRowcheck<'a, PCS>
+impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheck<'a, PCS>
 {
-    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self {
+    pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>) -> Self {
         Self { base: SpartanRowcheckBase::for_piop(piop) }
     }
 
-    pub fn move_out(self) -> SpartanPIOP<'a, PCS> {
-        self.base.piop
-    }
+    // pub fn move_out(self) -> SpartanPIOP<'a, PCS> {
+    //     self.base.piop
+    // }
 }
 
 impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type SCB = SpartanRowcheckBase<'a, PCS>;
 
@@ -240,7 +250,7 @@ impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
         ring.mul_ref_fst(&scalar, ring.sub_ref_snd(ring.mul_ref(at[0], at[1]), at[2]))
     }
 
-    fn check_eval(self, rX: Vec<Coeff<PCS::Poly>>) -> bool {
+    fn check_eval(&self, rX: Vec<Coeff<PCS::Poly>>) -> bool {
         let rA = self.get_base().get_challenge();
         let rB = self.get_base().get_challenge();
         let rC = self.get_base().get_challenge();
@@ -252,28 +262,28 @@ impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
         };
         let lincheck = SpartanLincheck::for_piop(self.base.piop, &[rA], &[rB], &[rC], rX);
         if let Some(rY) = lincheck.execute(linchecksum) {
-            println!("SpartanLincheck complete!");
+            // println!("SpartanLincheck complete!");
             lincheck.check_eval(rY)
         } else { false }
     }
 }
 
 
-pub struct SpartanLincheckBase<'a, PCS: MultilinearPCS>
+pub struct SpartanLincheckBase<'a, PCS: MultilinearPCS<'a>>
 {
-    piop: SpartanPIOP<'a, PCS>
+    piop: &'a SpartanPIOP<'a, PCS>
 }
 
-impl<'a, PCS:MultilinearPCS> SpartanLincheckBase<'a, PCS>
+impl<'a, PCS:MultilinearPCS<'a>> SpartanLincheckBase<'a, PCS>
 {
-    pub fn for_piop(piop: SpartanPIOP<'a, PCS>) -> Self
+    pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>) -> Self
     {
         Self { piop }
     }
 }
 
 impl<'a, PCS> SumcheckBase<2> for SpartanLincheckBase<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type F = CoeffRing<PCS::Poly>;
 
@@ -303,17 +313,17 @@ impl<'a, PCS> SumcheckBase<2> for SpartanLincheckBase<'a, PCS>
     }
 }
 
-pub struct SpartanLincheck<'a, PCS: MultilinearPCS>
+pub struct SpartanLincheck<'a, PCS: MultilinearPCS<'a>>
 {
     base: SpartanLincheckBase<'a, PCS>,
     wsM: RefCell<Vec<Coeff<PCS::Poly>>>,
 }
 
 impl<'a, PCS> SpartanLincheck<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field>
 {
 
-    pub fn for_piop(piop: SpartanPIOP<'a, PCS>, rA: &[Coeff<PCS::Poly>], rB: &[Coeff<PCS::Poly>],
+    pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>, rA: &[Coeff<PCS::Poly>], rB: &[Coeff<PCS::Poly>],
         rC: &[Coeff<PCS::Poly>], rX: Vec<Coeff<PCS::Poly>>) -> Self
     {
         let wsM = RefCell::new(SpartanLincheck::get_zM(&piop, rA, rB, rC, rX));
@@ -354,7 +364,7 @@ impl<'a, PCS> SpartanLincheck<'a, PCS>
 }
 
 impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
-    where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type SCB = SpartanLincheckBase<'a, PCS>;
 
@@ -370,7 +380,7 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
         ring.mul_ref(at[0], at[1])
     }
 
-    fn check_eval(self, rX: Vec<Coeff<PCS::Poly>>) -> bool {
+    fn check_eval(&self, rX: Vec<Coeff<PCS::Poly>>) -> bool {
         // TODO: check _evalM
         let ring = self.base.field();
         let y = {
@@ -383,10 +393,14 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
             let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, &self.base.piop.zcoeff);
             debug_assert!(ring.eq_el(&y, &ev[0]));
         }
-        let proof = self.base.piop.pcs.eval(&self.base.piop.com, &rX,
-            ring.clone_el(&y), Some(&self.base.piop.zcoeff), None);
+        let clonedrX = rX.iter().map(|el| ring.clone_el(el)).collect_vec();
+        let zevals = (self.base.piop.zevals.len() == 1 << self.base.piop.vc_cols).then(||
+            &*self.base.piop.zevals);
+        let proof = self.base.piop.pcs.eval(&self.base.piop.com, rX,
+            ring.clone_el(&y), Some(&self.base.piop.zcoeff), zevals);
         let clonedy = ring.clone_el(&y);
-        self.base.piop.pcs.verify(self.base.piop.com, &rX, clonedy, &self.base.piop.zcoeff, proof)
+        self.base.piop.pcs.verify(&self.base.piop.com,
+            &clonedrX, clonedy, &self.base.piop.zcoeff, proof)
     }
 }
 
@@ -402,11 +416,14 @@ mod tests {
     fn test_spartan() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
+        type FieldImpl = AsField<Zn>;
 
-        // let N = 4;
-        let N = 16;
+        let N = 14;
         
-        let spartan = SpartanPIOP::random(&field, N, N+1, VREP);
+        let spartan: SpartanPIOP::<'_, BaseFoldPCS<'_, RSFoldableCode<FieldImpl>,
+            BaseFoldSumcheckTimeEfficient<FieldImpl>>>
+            // BaseFoldSumcheckSpaceEfficient<FieldImpl>>>
+                = SpartanPIOP::random(&field, N, N+1, VREP);
 
         assert!(spartan.execute());
     }
