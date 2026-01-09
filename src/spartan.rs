@@ -12,9 +12,7 @@ use crate::{
     basefold::{
         MultilinearPCS,
         BaseFoldPCS,
-        BaseFoldSumcheck,
-        BaseFoldSumcheckSpaceEfficient,
-        BaseFoldSumcheckTimeEfficient
+        BaseFoldSumcheck
     },
     r1cs::R1CS,
     util::{gen_vector, Coeff, CoeffRing},
@@ -238,6 +236,8 @@ impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
 {
     type SCB = SpartanRowcheckBase<'a, PCS>;
 
+    fn time_efficient() -> bool { true }
+
     fn get_base(&self) -> &Self::SCB {
         &self.base
     }
@@ -368,6 +368,8 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
 {
     type SCB = SpartanLincheckBase<'a, PCS>;
 
+    fn time_efficient() -> bool { true }
+
     fn get_base(&self) -> &Self::SCB {
         &self.base
     }
@@ -409,11 +411,12 @@ mod tests {
     use super::*;
     use feanor_math::rings::zn::ZnRingStore;
     use feanor_math::rings::zn::zn_64::Zn;
+    use crate::basefold::{BaseFoldSumcheckTimeEfficient, BaseFoldSumcheckSpaceEfficient};
 
     const VREP: usize = 100;
 
     #[test]
-    fn test_spartan() {
+    fn test_spartan_te() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
         type FieldImpl = AsField<Zn>;
@@ -422,7 +425,21 @@ mod tests {
         
         let spartan: SpartanPIOP::<'_, BaseFoldPCS<'_, RSFoldableCode<FieldImpl>,
             BaseFoldSumcheckTimeEfficient<FieldImpl>>>
-            // BaseFoldSumcheckSpaceEfficient<FieldImpl>>>
+                = SpartanPIOP::random(&field, N, N+1, VREP);
+
+        assert!(spartan.execute());
+    }
+
+    #[test]
+    fn test_spartan_se() {
+
+        let field = Zn::new(65537).as_field().ok().unwrap();
+        type FieldImpl = AsField<Zn>;
+
+        let N = 14;
+        
+        let spartan: SpartanPIOP::<'_, BaseFoldPCS<'_, RSFoldableCode<FieldImpl>,
+            BaseFoldSumcheckSpaceEfficient<FieldImpl>>>
                 = SpartanPIOP::random(&field, N, N+1, VREP);
 
         assert!(spartan.execute());

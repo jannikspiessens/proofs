@@ -75,6 +75,7 @@ impl<'a, R: RingStore> MultilinearBasis<'a, R> {
         res
     }
 
+    // TODO: this could be faster
     pub fn evaluate(&self, at: &[El<R>]) -> El<R> {
         debug_assert!(self.z.len() == at.len());
         self.z.iter().zip(at).fold(self.ring.one(), |acc, (zi, ri)|

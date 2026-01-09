@@ -445,8 +445,10 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckSpaceEfficient<'a, F>
         assert!(1 << vc == polyrepr.len());
         Self { field, vc, polyrepr, isevals, z }
     }
+
+    // NOTE: code is here for nostalgia :)
     // assumes that polyrepr are either coeffs or evals belong to multilinear polynomial
-    // O(N) time, O(logN) space if isevals == true (NOTE: called logN times from evals)
+    // O(N) time, O(logN) space if isevals == true (called logN times from evals)
     // O(NlogN) time, O(logN) space if isevals == false
     // assumes polynomial is of the basefold form
     fn compute_round(&self, challenges: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
@@ -539,7 +541,7 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckTimeEfficient<'a, F>
     }
 
     fn compute_round(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
-        <BaseFoldSumcheckTimeEfficient<F> as Sumcheck<2, 1>>::compute_round(&self, challs, sum)
+        <BaseFoldSumcheckTimeEfficient<F> as Sumcheck<2, 1, true>>::compute_round(&self, challs, sum)
     }
 }
 
@@ -588,7 +590,7 @@ impl<'a, F> SumcheckBase<2> for BaseFoldSumcheckTimeEfficient<'a, F>
 }
 
 
-impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckTimeEfficient<'a, F>
+impl<'a, F> Sumcheck<2, 1, true> for BaseFoldSumcheckTimeEfficient<'a, F>
     where F: RingStore<Type: Field + FiniteRing>
 {
     type SCB = Self;
@@ -610,6 +612,46 @@ impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckTimeEfficient<'a, F>
         unimplemented!()
     }
 }
+
+
+// pub struct BaseFoldSumcheckDoubleEfficient<'a, R>
+//     where R: RingStore
+// {
+//     field: &'a R,
+//     vc: usize,
+//     m: usize,
+//     ws: Vec<El<R>>,
+//     z: Vec<El<R>>,
+//     third_point: i32
+// }
+
+// impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
+//     where F: RingStore<Type: Field + FiniteRing>
+// {
+//     type F = F;
+
+//     fn new(field: &'a F, evals: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
+//     {
+//         assert!(isevals == true);
+//         let vc = z.len();
+//         assert!(1 << vc == evals.len());
+//         let m = vc.div_ceil(2);
+//         let mut ws = Vec::with_capacity(1 << (vc - m));
+//         evals.chunks_exact(1 << (vc - m)).for_each(|chunk|
+//             ws.iter_mut().zip(chunk).for_each(|(wsi, evali)| field.add_assign_ref(wsi, evali))
+//         );
+//         Self { field, vc, m, ws, z, third_point: -1 }
+//     }
+
+//     fn compute_round(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
+//         let i = challs.len();
+//         assert!(i <= self.vc - self.m);
+//         let vcmini = self.vc - i;
+//         let scalar = MultilinearBasis::new(self.field, &self.z[vcmini..]).evaluate(challs);
+
+//         unimplemented!()
+//     }
+// }
 
 
 // outputs f(a) where f(X) = interpolate((x, y1), (-x, y2))
@@ -769,17 +811,27 @@ mod tests {
         let field = Zn::new(65537).as_field().ok().unwrap();
         pub type FieldImpl = AsField<Zn>;
 
-        let N = 14;
+        // let N = 6;
+        let N = 23;
         let k0 = 2;
         let c = 2;
-        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
-        // let bf = BaseFoldPCS::<_, BaseFoldSumcheckTimeEfficient<_>>::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_,
+            BaseFoldSumcheckSpaceEfficient<_>
+            // BaseFoldSumcheckTimeEfficient<_>
+            // BaseFoldSumcheckDoubleEfficient<_>
+        >::new(&field, N, k0, c, VREP);
+
+        use rand::RngCore;
+        use rand_seeder::{Seeder, SipRng};
+        let mut rng: SipRng = Seeder::from("TestingBaseFold").into_rng();
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
-            field.random_element(rand::random::<u64>), 1 << N);
+            // field.random_element(rand::random::<u64>), 1 << N);
+            field.random_element(|| rng.next_u64()), 1 << N);
         let poly = from_hypercube_coeffs(bf.polyring(), &randomcoeffs);
 
-        let zinner = gen_vector::<El<FieldImpl>>(|| field.random_element(rand::random::<u64>), N);
+        // let zinner = gen_vector::<El<FieldImpl>>(|| field.random_element(rand::random::<u64>), N);
+        let zinner = gen_vector::<El<FieldImpl>>(|| field.random_element(|| rng.next_u64()), N);
         let z = (0..N).map_fn(|i| field.clone_el(&zinner[i]));
         let y = bf.polyring().evaluate(&poly, &z, bf.coeffring().identity());
 

@@ -1,5 +1,5 @@
 use itertools::Itertools;
-use std::cell::{Ref, RefMut, RefCell};
+use std::cell::{Ref, RefCell};
 use tracing::instrument;
 
 use feanor_math::ring::{El, RingBase, RingStore, RingExtension};
@@ -12,7 +12,7 @@ use feanor_math::rings::multivariate::{
 };
 
 use crate::multilinear::{
-    sum_over_hypercube, evaluate_at_fromevals_inplace
+    sum_over_hypercube, evaluate_at_fromevals_inplace, MultilinearBasisEvals
 };
 
 
@@ -130,113 +130,125 @@ pub trait SumcheckBase<const D: usize>
 
 
 // type alias used below
-type SCF<T, const D: usize, const N: usize> = <<T as Sumcheck<D, N>>::SCB as SumcheckBase<D>>::F;
+type SCF<T, const D: usize, const N: usize, const TE: bool>
+    = <<T as Sumcheck<D,N,TE>>::SCB as SumcheckBase<D>>::F;
 
 
 // D: degree of the product sumcheck
 // N: number of generic multilinear polynomials in the product sumcheck
-pub trait Sumcheck<const D: usize, const N: usize>
+// TE: if true, use the time-efficient algorithm, otherwise use the space-efficient algorithm
+pub trait Sumcheck<const D: usize, const N: usize, const TE: bool>
     where [(); D - 1]: // trick that tells compiler that D - 1 is still valid usize?
 {
     type SCB: SumcheckBase<D>;
 
     fn get_base(&self) -> &Self::SCB;
 
-    fn get_workspace(&self) -> [&RefCell<Vec<El<SCF<Self,D,N>>>>; N];
+    fn get_workspace(&self) -> [&RefCell<Vec<El<SCF<Self,D,N,TE>>>>; N];
 
-    fn compute_term(ring: &SCF<Self,D,N>, at: [&El<SCF<Self,D,N>>; N], scalar: &El<SCF<Self,D,N>>)
-        -> El<SCF<Self,D,N>>;
+    fn compute_term(ring: &SCF<Self,D,N,TE>, at: [&El<SCF<Self,D,N,TE>>; N],
+        scalar: &El<SCF<Self,D,N,TE>>) -> El<SCF<Self,D,N,TE>>;
 
-    fn check_eval(&self, rX: Vec<El<SCF<Self,D,N>>>) -> bool;
+    fn check_eval(&self, rX: Vec<El<SCF<Self,D,N,TE>>>) -> bool;
 
-    // TODO: first round could simply use reference to evals, then second round initializes the
-    // workspace. This way we don't have to copy the full evals vector from a reference first
-    fn compute_round(&self, challs: &[El<SCF<Self,D,N>>],
-        sum: Option<El<SCF<Self,D,N>>>) -> PolyEvals<SCF<Self,D,N>, {D - 1}>
+    fn compute_round(&self, challs: &[El<SCF<Self,D,N,TE>>],
+        sum: Option<El<SCF<Self,D,N,TE>>>) -> PolyEvals<SCF<Self,D,N,TE>, {D - 1}>
     {
-        let ring = self.get_base().field();
+        let field = self.get_base().field();
         let i = challs.len();
         let vc = self.get_base().varcount();
-        debug_assert!(i < vc);
+        assert!(i < vc);
 
-        if i > 0 {
+        let logwslen = if TE { vc - i } else { vc };
+
+        if i > 0 && TE {
             let mut ws = self.get_workspace();
-            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << (vc - i + 1)));
+            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << (logwslen + 1)));
 
             ws.iter_mut().for_each(|wszM| {
                 let mut wszMmut = wszM.borrow_mut();
-                evaluate_at_fromevals_inplace(ring, vc - i + 1, &challs[..1], &mut wszMmut);
-                wszMmut.truncate(1 << (vc - i));
+                evaluate_at_fromevals_inplace(field, logwslen + 1, &challs[..1], &mut wszMmut);
+                wszMmut.truncate(1 << logwslen);
             });
         }
         {
             let ws = self.get_workspace();
-            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << (vc - i)));
+            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << logwslen));
         }
 
-        let mut hzero = ring.zero();
-        let mut hone = ring.zero();
+        let mut hzero = field.zero();
+        let mut hone = field.zero();
         let other_points = self.get_base().get_other_eval_points();
-        let mut other_evals: [El<SCF<Self,D,N>>; D - 1] = core::array::from_fn(|_| ring.zero());
+        let mut other_evals: [El<SCF<Self,D,N,TE>>; D - 1] = core::array::from_fn(|_| field.zero());
+
+        let ws = self.get_workspace(); 
+        let wsref: [Ref<'_, _>; N] = core::array::from_fn(|i| ws[i].borrow());
+        
+        let evalchalls = |wsind: usize, ind: usize| -> El<SCF<Self,D,N,TE>> {
+            let eq = MultilinearBasisEvals::new(field, challs);
+            (0..(1 << i)).map(|j| &wsref[wsind][ind + j*(1 << (vc - i))]).zip(eq).fold(field.zero(),
+                |acc, (wsel, eqel)| field.add(acc, field.mul_ref(wsel, &eqel)))
+        };
+        let mut tmpz: [_; N] = core::array::from_fn(|_| field.zero());
+        let mut tmpo: [_; N] = core::array::from_fn(|_| field.zero());
 
         let half = 1 << (vc - i - 1);
-        let ws = self.get_workspace();
-        let mut wsmut: [RefMut<'_, _>; N] = core::array::from_fn(|i| ws[i].borrow_mut());
-        let splitws = wsmut.iter_mut().flat_map(|wsi| {
-            let (wsiz, wsio) = wsi.split_at_mut(half);
-            [wsiz, wsio]
-        }).collect_vec();
-        
         self.get_base().get_scalars(challs).enumerate().for_each(|(j, (sczi, scoi))| {
-            ring.add_assign(&mut hzero, Self::compute_term(ring,
-                core::array::from_fn(|k| &splitws[2*k][j]), &sczi));
+            if !TE {
+                (0..N).for_each(|k| tmpz[k] = evalchalls(k, j)) ;
+            }
+            field.add_assign(&mut hzero, Self::compute_term(field,
+                core::array::from_fn(|k| if TE { &wsref[k][j] } else { &tmpz[k] }), &sczi));
 
+            if !TE { (0..N).for_each(|k| tmpo[k] = evalchalls(k, j+half)); }
             if sum.is_none() {
-                ring.add_assign(&mut hone, Self::compute_term(ring,
-                    core::array::from_fn(|k| &splitws[2*k+1][j]), &scoi));
+                field.add_assign(&mut hone, Self::compute_term(field,
+                    core::array::from_fn(|k| if TE { &wsref[k][j+half] } else { &tmpo[k] }), &scoi));
             }
 
             let sci = PolyEvals::new([sczi, scoi], [], []);
+            // NOTE: initializing the PolyEvals objects here is slower since blocks inlining?
             other_evals.iter_mut().zip(other_points.iter()).for_each(|(eval, point)| {
-                let wspi = (0..N).map(|k| {
-                    PolyEvals::new(core::array::from_fn(|l| ring.clone_el(&splitws[2*k + l][j])),
-                        [], []).degone_at(ring, *point)
-                }).collect_vec();
+                let wspi: [_; N] = core::array::from_fn(|k| PolyEvals::new(
+                        if TE { core::array::from_fn(|l| field.clone_el(&wsref[k][j+l*half])) }
+                        else { [ field.clone_el(&tmpz[k]), field.clone_el(&tmpo[k]) ] },
+                    [], []).degone_at(field, *point)
+                );
                 debug_assert!(wspi.len() == N);
-                ring.add_assign(eval, Self::compute_term(ring,
-                    core::array::from_fn(|k| &wspi[k]), &sci.at(ring, *point)
+                field.add_assign(eval, Self::compute_term(field,
+                    core::array::from_fn(|k| &wspi[k]), &sci.at(field, *point)
                 ))
             });
         });
 
-        hone = if let Some(sum) = sum { ring.sub_ref_snd(sum, &hzero) } else { hone };
+        hone = if let Some(sum) = sum { field.sub_ref_snd(sum, &hzero) } else { hone };
         PolyEvals::new([hzero, hone], other_points, other_evals)
     }
 
-    fn execute(&self, sum: El<SCF<Self,D,N>>) -> Option<Vec<El<SCF<Self,D,N>>>>
+    fn execute(&self, sum: El<SCF<Self,D,N,TE>>) -> Option<Vec<El<SCF<Self,D,N,TE>>>>
     {
-        let ring = self.get_base().field();
+        let field = self.get_base().field();
         let mut challvec = Vec::new();
 
         let mut tmpsum = sum;
         ((0..self.get_base().varcount()).all(|_| {
             // println!("================== Round {i}");
             let hdi = self.compute_round(&challvec, None);
-            // let hdi = self.compute_round(&challvec, Some(ring.clone_el(&tmpsum)));
+            // let hdi = self.compute_round(&challvec, Some(field.clone_el(&tmpsum)));
             // {
             //     let ws = self.get_workspace();
             //     ws.iter().enumerate().for_each(|(i, v)| {
             //         println!("Printing ws {i}");
-            //         v.borrow().iter().for_each(|el| ring.println(&el));
+            //         v.borrow().iter().for_each(|el| field.println(&el));
             //         println!("");
             //     });
             // }
             // println!("round {i}: hdi:");
-            // hdi.print(ring);
-            // println!("round {i}: at0: {}, at1: {}", ring.format(&hdi.at(ring, 0)), ring.format(&hdi.at(ring, 1)));
-            let res = ring.eq_el(&tmpsum, &ring.add(hdi.at(ring, 0), hdi.at(ring, 1)));
+            // hdi.print(field);
+            // println!("round {i}: at0: {}, at1: {}", field.format(&hdi.at(field, 0)), field.format(&hdi.at(field, 1)));
+            let res = field.eq_el(&tmpsum, &field.add(hdi.at(field, 0), hdi.at(field, 1)));
             let chall = self.get_base().get_challenge();
-            tmpsum = hdi.interp(ring, &chall);
+            tmpsum = hdi.interp(field, &chall);
             challvec.insert(0, chall);
             res
         }) && {
@@ -244,11 +256,11 @@ pub trait Sumcheck<const D: usize, const N: usize>
             let ws = self.get_workspace();
             ws.into_iter().for_each(|wsi| {
                 let mut wsimut = wsi.borrow_mut();
-                evaluate_at_fromevals_inplace(ring, 1, &challvec[..1], &mut wsimut);
+                evaluate_at_fromevals_inplace(field, 1, &challvec[..1], &mut wsimut);
                 wsimut.truncate(1);
             });
             let wsref: [Ref<'_, _>; N] = core::array::from_fn(|i| ws[i].borrow());
-            ring.eq_el(&tmpsum, &Self::compute_term(ring,
+            field.eq_el(&tmpsum, &Self::compute_term(field,
                 core::array::from_fn(|i| &wsref[i][0]), &sc.pop().unwrap()))
         }).then(|| challvec)
     }
