@@ -14,7 +14,7 @@ pub mod codes;
 
 pub mod basefold;
 
-// pub mod spartan;
+pub mod spartan;
 
 pub mod r1cs;
 

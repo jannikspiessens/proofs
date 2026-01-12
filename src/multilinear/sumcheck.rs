@@ -12,7 +12,8 @@ use feanor_math::rings::multivariate::{
 };
 
 use crate::multilinear::{
-    sum_over_hypercube, evaluate_at_fromevals_inplace, MultilinearBasisEvals
+    sum_over_hypercube, evaluate_at_fromevals_inplace,
+    MultilinearBasisEvals, evaluate_at_fromevals
 };
 
 
@@ -130,61 +131,73 @@ pub trait SumcheckBase<const D: usize>
 
 
 // type alias used below
-type SCF<T, const D: usize, const N: usize, const TE: bool>
-    = <<T as Sumcheck<D,N,TE>>::SCB as SumcheckBase<D>>::F;
+type SCF<T, const D: usize, const N: usize>
+    = <<T as Sumcheck<D,N>>::SCB as SumcheckBase<D>>::F;
 
 
 // D: degree of the product sumcheck
 // N: number of generic multilinear polynomials in the product sumcheck
-// TE: if true, use the time-efficient algorithm, otherwise use the space-efficient algorithm
-pub trait Sumcheck<const D: usize, const N: usize, const TE: bool>
+pub trait Sumcheck<const D: usize, const N: usize>
     where [(); D - 1]: // trick that tells compiler that D - 1 is still valid usize?
 {
     type SCB: SumcheckBase<D>;
 
+    fn TE() -> bool;
+
     fn get_base(&self) -> &Self::SCB;
 
-    fn get_workspace(&self) -> [&RefCell<Vec<El<SCF<Self,D,N,TE>>>>; N];
+    fn get_reference(&self) -> [&[El<SCF<Self,D,N>>]; N];
 
-    fn compute_term(ring: &SCF<Self,D,N,TE>, at: [&El<SCF<Self,D,N,TE>>; N],
-        scalar: &El<SCF<Self,D,N,TE>>) -> El<SCF<Self,D,N,TE>>;
+    fn get_workspace(&self) -> [&RefCell<Vec<El<SCF<Self,D,N>>>>; N];
 
-    fn check_eval(&self, rX: Vec<El<SCF<Self,D,N,TE>>>) -> bool;
+    fn compute_term(ring: &SCF<Self,D,N>, at: [&El<SCF<Self,D,N>>; N],
+        scalar: &El<SCF<Self,D,N>>) -> El<SCF<Self,D,N>>;
 
-    fn compute_round(&self, challs: &[El<SCF<Self,D,N,TE>>],
-        sum: Option<El<SCF<Self,D,N,TE>>>) -> PolyEvals<SCF<Self,D,N,TE>, {D - 1}>
+    fn check_eval(&self, rX: Vec<El<SCF<Self,D,N>>>) -> bool;
+
+    fn compute_round(&self, challs: &[El<SCF<Self,D,N>>],
+        sum: Option<El<SCF<Self,D,N>>>) -> PolyEvals<SCF<Self,D,N>, {D - 1}>
     {
         let field = self.get_base().field();
         let i = challs.len();
         let vc = self.get_base().varcount();
         assert!(i < vc);
-
-        let logwslen = if TE { vc - i } else { vc };
+        let TE = Self::TE();
 
         if i > 0 && TE {
             let mut ws = self.get_workspace();
-            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << (logwslen + 1)));
+            debug_assert!(i == 1 || ws.iter().all(|v| v.borrow().len() == 1 << (vc - i + 1)));
 
-            ws.iter_mut().for_each(|wszM| {
+            ws.iter_mut().enumerate().for_each(|(j, wszM)| {
                 let mut wszMmut = wszM.borrow_mut();
-                evaluate_at_fromevals_inplace(field, logwslen + 1, &challs[..1], &mut wszMmut);
-                wszMmut.truncate(1 << logwslen);
+                if i == 1 {
+                    let refs = self.get_reference(); // only call this for i == 1
+                    *wszMmut = evaluate_at_fromevals(field, vc, &challs[..1], &refs[j]);
+                } else {
+                    evaluate_at_fromevals_inplace(field, vc - i + 1, &challs[..1], &mut wszMmut);
+                    wszMmut.truncate(1 << vc - i);
+                }
             });
         }
-        {
-            let ws = self.get_workspace();
-            debug_assert!(ws.iter().all(|v| v.borrow().len() == 1 << logwslen));
+        if i > 0 && TE {
+            debug_assert!(self.get_workspace().iter().all(|v| v.borrow().len() == 1 << vc - i));
+        }
+        if i == 0 {
+            debug_assert!(self.get_reference().iter().all(|v| v.len() == 1 << vc));
         }
 
         let mut hzero = field.zero();
         let mut hone = field.zero();
         let other_points = self.get_base().get_other_eval_points();
-        let mut other_evals: [El<SCF<Self,D,N,TE>>; D - 1] = core::array::from_fn(|_| field.zero());
+        let mut other_evals: [El<SCF<Self,D,N>>; D - 1] = core::array::from_fn(|_| field.zero());
 
         let ws = self.get_workspace(); 
-        let wsref: [Ref<'_, _>; N] = core::array::from_fn(|i| ws[i].borrow());
+        let wsrefref: [Ref<'_, _>; N] = core::array::from_fn(|i| ws[i].borrow());
+        let wsref: [&[_]; N] = if !TE || i == 0 { self.get_reference() } else {
+            core::array::from_fn::<&[_], N, _>(|i| &wsrefref[i])
+        };
         
-        let evalchalls = |wsind: usize, ind: usize| -> El<SCF<Self,D,N,TE>> {
+        let evalchalls = |wsind: usize, ind: usize| -> El<SCF<Self,D,N>> {
             let eq = MultilinearBasisEvals::new(field, challs);
             (0..(1 << i)).map(|j| &wsref[wsind][ind + j*(1 << (vc - i))]).zip(eq).fold(field.zero(),
                 |acc, (wsel, eqel)| field.add(acc, field.mul_ref(wsel, &eqel)))
@@ -225,7 +238,7 @@ pub trait Sumcheck<const D: usize, const N: usize, const TE: bool>
         PolyEvals::new([hzero, hone], other_points, other_evals)
     }
 
-    fn execute(&self, sum: El<SCF<Self,D,N,TE>>) -> Option<Vec<El<SCF<Self,D,N,TE>>>>
+    fn execute(&self, sum: El<SCF<Self,D,N>>) -> Option<Vec<El<SCF<Self,D,N>>>>
     {
         let field = self.get_base().field();
         let mut challvec = Vec::new();
@@ -292,53 +305,6 @@ pub fn sumcheck_sum<F, const M: usize>(mpolyring: &MultivariatePolyRingImpl<F>,
         sum_over_hypercube(mpolyring, poly, freevarind,
             &makesuffix(field.int_hom().map_ref(&otherevalpoints[i])))
     ))
-}
-
-
-// iterator needed in sumcheck given vector representation of multilinear polynomial
-pub struct SCMultilinearIterator<'a, E> {
-    vector: &'a [E],
-    dmini: usize,
-    i: usize,
-    b: usize,
-    bp: usize,
-    yzero: bool
-}
-
-impl<'a, E> SCMultilinearIterator<'a, E> {
-    pub fn new(vector: &'a [E], dmini: usize, i: usize, yzero: bool) -> Self {
-        Self {
-            vector,
-            dmini,
-            i,
-            b: 0,
-            bp: 0,
-            yzero
-        }
-    }
-}
-
-impl<'a, E> Iterator for SCMultilinearIterator<'a, E>
-{
-    type Item = &'a E;
-
-    fn next(&mut self) -> Option<&'a E> {
-        if self.bp < (1 << self.i) {
-            let ind = (self.bp << (self.dmini))
-                + if self.yzero {0} else {1 << (self.dmini - 1)}
-                + self.b;
-            //println!("BFMultilinear iterator ind: {ind}, b: {}, bp: {}", self.b, self.bp);
-            if self.b == ((1 << (self.dmini - 1)) - 1) {
-                self.bp += 1;
-                self.b = 0;
-            } else {
-                self.b += 1;
-            }
-            Some(&self.vector[ind])
-        } else {
-            None
-        }
-    }
 }
 
 

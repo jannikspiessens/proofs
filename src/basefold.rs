@@ -20,13 +20,11 @@ use crate::codes::{
 };
 use crate::multilinear::{
     MultilinearBasis, MultilinearBasisEvals,
-    get_hypercube_coeffs, evals_to_coeffs_inplace,
-    evaluate_at_fromcoeff, evaluate_at_fromevals,
+    get_hypercube_coeffs, evals_to_coeffs_inplace, evaluate_at_fromevals,
     sum_over_hypercube_withscalars, evalscalars_to_coeffscalars,
     sumcheck::{
         SumcheckBase, Sumcheck,
-        sumcheck_sum, PolyEvals,
-        SCMultilinearIterator
+        sumcheck_sum, PolyEvals
     }
 };
 
@@ -37,7 +35,7 @@ pub trait Commitment {}
 
 pub trait MultilinearPCS<'a> {
 
-    type Poly: MultivariatePolyRingStore<Type: MultivariatePolyRing>;
+    type Poly: RingStore<Type: MultivariatePolyRing>;
     type C: Commitment;
     type P: Proof;
 
@@ -61,6 +59,7 @@ pub trait MultilinearPCS<'a> {
     fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool;
 
+    // fn eval(&'a self, com: &Self::C, z: &'a [Coeff<Self::Poly>],
     fn eval(&'a self, com: &Self::C, z: Vec<Coeff<Self::Poly>>,
         y: Coeff<Self::Poly>, polycoeff: Option<&'a[Coeff<Self::Poly>]>,
         polyeval: Option<&'a[Coeff<Self::Poly>]>) -> Self::P;
@@ -93,21 +92,21 @@ impl<R: RingStore<Type: Field>> Proof for BaseFoldProof<R>{}
 
 
 // type alias
-type BSCF<'a, SC> = <SC as BaseFoldSumcheck<'a>>::F;
+type SCF<T> = <<T as Sumcheck<2, 1>>::SCB as SumcheckBase<2>>::F;
 
 pub struct BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>
 {
-    fs: RefCell<FiatShamirSim<'a, BSCF<'a, SC>>>,
-    polyring: MultivariatePolyRingImpl<BSCF<'a, SC>>,
+    fs: RefCell<FiatShamirSim<'a, SCF<SC>>>,
+    polyring: MultivariatePolyRingImpl<SCF<SC>>,
     code: C,
     ver_rep: usize,
 }
 
 impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>
 {
-    pub fn field(&self) -> &BSCF<'a, SC> {
+    pub fn field(&self) -> &SCF<SC> {
         self.code.ring()
     }
 
@@ -127,8 +126,8 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
 }
 
 impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>,
-          <BSCF<'a, SC> as RingStore>::Type: FiniteRing
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>,
+          <SCF<SC> as RingStore>::Type: FiniteRing
 {
     pub fn reset_fs(&self) {
         self.fs.borrow_mut().reset()
@@ -137,8 +136,10 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
 
 
 impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
-    where F: RingStore<Type: Field + FiniteRing> + Clone, SC: BaseFoldSumcheck<'a, F = F>
+    where F: RingStore<Type: Field + FiniteRing> + Clone, SC: BaseFoldSumcheck<'a>,
+          <SC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
 {
+    // pub fn new<'b>(field: &'b F, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     pub fn new(field: &'a F, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     {
         assert!(k0.is_power_of_two());
@@ -162,12 +163,12 @@ impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
 }
 
 impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<'a, SC>>,
-          BSCF<'a, SC>: Clone, <BSCF<'a, SC> as RingStore>::Type: FiniteRing
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>,
+          SCF<SC>: Clone, <SCF<SC> as RingStore>::Type: FiniteRing
 {
-    type Poly = MultivariatePolyRingImpl<BSCF<'a, SC>>;
-    type C = BaseFoldCommitment<BSCF<'a, SC>>;
-    type P = BaseFoldProof<BSCF<'a, SC>>;
+    type Poly = MultivariatePolyRingImpl<SCF<SC>>;
+    type C = BaseFoldCommitment<SCF<SC>>;
+    type P = BaseFoldProof<SCF<SC>>;
 
     fn polyring(&self) -> &Self::Poly {
         &self.polyring
@@ -198,7 +199,7 @@ impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
 
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
+        let mut polys: Vec<PolyEvals<SCF<SC>,1>> = Vec::with_capacity(d);
         let eq = MultilinearBasis::new(f, &z).polynomial(&self.polyring);
         let mut wpoly = self.polyring.clone_el(poly);
         let mut scpoly = self.polyring.mul_ref_fst(poly, eq);
@@ -210,10 +211,10 @@ impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
         ), &y);*/
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<SCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
+        let mut last: Vec<El<SCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
         
         for dind in (0..d).rev() {
@@ -336,37 +337,40 @@ impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
         })
     }
 
-    // NOTE: if no polyeval is provided, this function will not compute polyeval from polycoeff,
-    // even though that would be the fastest method
-    // (but not necessarily in blind setting)
+    // NOTE: if no polyeval is provided, this function will compute polyeval from polycoeff
+    // fn eval(&'a self, com: &Self::C, z: &'a [Coeff<Self::Poly>],
     fn eval(&'a self, com: &Self::C, z: Vec<Coeff<Self::Poly>>,
         y: Coeff<Self::Poly>, polycoeff: Option<&'a [Coeff<Self::Poly>]>,
         polyeval: Option<&'a [Coeff<Self::Poly>]>) -> Self::P
     {
-        assert!(polycoeff.is_some() || polyeval.is_some()); // one is needed for doing sumcheck
-        let d = self.code.d();
+        // assert!(polycoeff.is_some() || polyeval.is_some()); // one is needed for doing sumcheck
+        assert!(polycoeff.is_some() && polyeval.is_some()); // TODO: remove this
         let vc = self.polyring.indeterminate_count();
+        assert!([polycoeff, polyeval].iter().all(|opt| opt.is_none_or(|v| v.len() == 1 << vc)));
+        let d = self.code.d();
         let f = self.field();
         
         let fsclone = self.fs.borrow().clone();
 
-        let isevals = polyeval.is_some();
-        let polyrepr = if let Some(unwr) = polyeval { unwr } else { polycoeff.unwrap() };
+        // let polyrepr = if let Some(unwr) = polyeval { unwr } else {
+        //     polycoeff.unwrap()
+        // };
+        let polyrepr = polyeval.unwrap();
 
-        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
+        let mut polys: Vec<PolyEvals<SCF<SC>,1>> = Vec::with_capacity(d);
 
-        let bsc = SC::new(f, polyrepr, isevals, z);
-        let mut hunivar = bsc.compute_round(&[], Some(f.clone_el(&y)));
-        // let mut hunivar = bsc.compute_round(&[], None);
+        let bsc = SC::new(f, polyrepr, z);
+        let mut hunivar = bsc.compute_round_bsc(&[], Some(f.clone_el(&y)));
+        // let mut hunivar = bsc.compute_round_bsc(&[], None);
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<SCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
+        let mut last: Vec<El<SCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
 
-        let mut challvec: Vec<El<BSCF<SC>>> = Vec::with_capacity(d - 1);
+        let mut challvec: Vec<El<SCF<SC>>> = Vec::with_capacity(d - 1);
         
         for dind in (0..d).rev() {
             let chall = self.get_challenge();
@@ -382,20 +386,18 @@ impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
             challvec.insert(0, chall);
             if dind != 0 {
                 let tmpsum = polys[d - 1 - dind].interp(self.coeffring(), &challvec[0]);
-                hunivar = bsc.compute_round(&challvec, Some(tmpsum));
-                // hunivar = bsc.compute_round(&challvec, None);
+                hunivar = bsc.compute_round_bsc(&challvec, Some(tmpsum));
+                // hunivar = bsc.compute_round_bsc(&challvec, None);
                 polys.push(hunivar);
             }
         }
     
         assert!(self.code.k(0).ilog2() as usize == vc - d);
         if self.code.k(0) > 1 {
-            last = if isevals {
+            last = {
                 let mut tmp = evaluate_at_fromevals(&f, vc, &challvec, polyrepr);
                 evals_to_coeffs_inplace(&f, vc - d, &mut tmp);
                 tmp
-            } else {
-                evaluate_at_fromcoeff(&f, vc, &challvec, polyrepr)
             }
         }
 
@@ -410,142 +412,46 @@ impl<'a, C, SC> MultilinearPCS<'a> for BaseFoldPCS<'a, C, SC>
 }
 
 
-pub trait BaseFoldSumcheck<'a>
+pub trait BaseFoldSumcheck<'a>: Sumcheck<2, 1>
 {
-    type F: RingStore<Type: Field>;
+    // fn new(field: &'a SCF<Self>, evals: &'a [El<SCF<Self>>], z: &'a [El<SCF<Self>>]) -> Self;
+    fn new(field: &'a SCF<Self>, evals: &'a [El<SCF<Self>>], z: Vec<El<SCF<Self>>>) -> Self;
 
-    fn new(field: &'a Self::F, polyrepr: &'a [El<Self::F>], isevals: bool, z: Vec<El<Self::F>>)
-        -> Self;
-
-    // TODO: ideally BaseFoldSumcheck is a subtrait of a Sumcheck trait that implements this
-    // but then we first need to implement a space-efficient Sumcheck trait
-    fn compute_round(&self, challs: &[El<Self::F>], sum: Option<El<Self::F>>)
-        -> PolyEvals<Self::F,1>;
+    fn compute_round_bsc(&self, challs: &[El<SCF<Self>>], sum: Option<El<SCF<Self>>>)
+        -> PolyEvals<SCF<Self>,1>;
 }
 
 
-pub struct BaseFoldSumcheckSpaceEfficient<'a, R>
+pub struct BaseFoldSumcheckBasic<'a, R, const TE: bool>
     where R: RingStore
 {
     field: &'a R,
     vc: usize,
-    polyrepr: &'a [El<R>],
-    isevals: bool,
-    z: Vec<El<R>>
-}
-
-impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckSpaceEfficient<'a, F>
-    where F: RingStore<Type: Field>
-{
-    type F = F;
-
-    fn new(field: &'a F, polyrepr: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
-    {
-        let vc = z.len();
-        assert!(1 << vc == polyrepr.len());
-        Self { field, vc, polyrepr, isevals, z }
-    }
-
-    // NOTE: code is here for nostalgia :)
-    // assumes that polyrepr are either coeffs or evals belong to multilinear polynomial
-    // O(N) time, O(logN) space if isevals == true (called logN times from evals)
-    // O(NlogN) time, O(logN) space if isevals == false
-    // assumes polynomial is of the basefold form
-    fn compute_round(&self, challenges: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
-
-        let i = challenges.len();
-        let vcmini = self.vc - i;
-
-        let mut scalars = basefold_evalscalars(self.field, &self.z, challenges, vcmini).collect_vec();
-        if !self.isevals { evalscalars_to_coeffscalars(self.field, self.vc - 1, &mut scalars); }
-
-        let iter1 = SCMultilinearIterator::new(self.polyrepr, vcmini, i, false);
-        let tmp1 = sum_over_hypercube_withscalars(self.field, scalars.iter(), iter1);
-
-        let zvcmini = &self.z[vcmini - 1];
-        let tmp0 = if let Some(sum) = sum {
-            let t = self.field.sub_ref_fst(&sum, self.field.mul_ref(&tmp1, &zvcmini));
-            if !self.isevals { t } else {
-                self.field.div(&t, &self.field.sub_ref_snd(self.field.one(), &zvcmini)) }
-        } else {
-            let iter0 = SCMultilinearIterator::new(self.polyrepr, vcmini, i, true);
-            sum_over_hypercube_withscalars(self.field, scalars.iter(), iter0)
-        };
-
-        // TODO: remove detour to coefficients
-        let oneminz = self.field.sub_ref_snd(self.field.one(), zvcmini);
-        let twozminone = self.field.sub(self.field.get_ring().mul_int_ref(zvcmini, 2),
-            self.field.one());
-        let threezmintwo = self.field.sub(self.field.get_ring().mul_int_ref(zvcmini, 3),
-            self.field.int_hom().map(2));
-        let tmpsub = self.field.sub_ref(&tmp1, &tmp0);
-        let (screpr, sumrepr) = if !self.isevals {(&twozminone, &tmp1)}
-            else {(&threezmintwo, &tmpsub)};
-
-        let c0 = self.field.mul_ref(&oneminz, &tmp0);
-        let c1 = self.field.add(self.field.mul_ref(screpr, &tmp0),
-            self.field.mul_ref(&oneminz, &tmp1));
-        let c2 = self.field.mul_ref(&twozminone, sumrepr);
-
-        let tmp = self.field.add_ref(&c0, &c2);
-        PolyEvals::new([c0, self.field.add_ref(&tmp, &c1)],
-            [-1], [self.field.sub_ref(&tmp, &c1)])
-    }
-}
-
-
-// TODO: remove redundancy with others? only used in space-efficient algorithm
-pub fn basefold_evalscalars<'a, F>(field: &'a F, z: &'a [El<F>], challenges: &'a [El<F>],
-    vcmini: usize) -> impl Iterator<Item = El<F>>
-    where F: RingStore<Type: Field>
-{
-    let vc = z.len();
-    let eq0 = MultilinearBasis::new(field, &z[vcmini..]).evaluate(challenges);
-    let mut eq1 = MultilinearBasisEvals::new(field, challenges);
-    let mut eq2 = MultilinearBasisEvals::new(field, &z[..(vcmini - 1)]);
-    (0..(1 << (vc - 1))).map(move |i| {
-        let tmp = field.mul_ref_fst(&eq0,
-            field.mul_ref_fst(&eq1.cur, eq2.next().unwrap()));
-        if (i + 1) % (1 << (vcmini - 1)) == 0 {
-            eq1.next();
-            eq2.reset();
-        }
-        tmp
-    })
-}
-
-
-pub struct BaseFoldSumcheckTimeEfficient<'a, R>
-    where R: RingStore
-{
-    field: &'a R,
-    vc: usize,
+    evals: &'a [El<R>],
     ws: RefCell<Vec<El<R>>>,
+    // z: &'a [El<R>],
     z: Vec<El<R>>,
     scalarstate: RefCell<El<R>>
 }
 
-impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckTimeEfficient<'a, F>
+impl<'a, F, const TE: bool> BaseFoldSumcheck<'a> for BaseFoldSumcheckBasic<'a, F, TE>
     where F: RingStore<Type: Field + FiniteRing>
 {
-    type F = F;
-
-    fn new(field: &'a F, evals: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
+    // fn new(field: &'a F, evals: &'a [El<F>], z: &'a [El<F>]) -> Self
+    fn new(field: &'a F, evals: &'a [El<F>], z: Vec<El<F>>) -> Self
     {
-        assert!(isevals == true);
         let vc = z.len();
         assert!(1 << vc == evals.len());
-        // TODO: can we avoid this cloning?
-        let ws = RefCell::new(evals.iter().map(|el| field.clone_el(el)).collect_vec());
-        Self { field, vc, ws, z, scalarstate: RefCell::new(field.one()) }
+        Self { field, vc, evals, ws: RefCell::default(), z, scalarstate: RefCell::new(field.one()) }
     }
 
-    fn compute_round(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
-        <BaseFoldSumcheckTimeEfficient<F> as Sumcheck<2, 1, true>>::compute_round(&self, challs, sum)
+    fn compute_round_bsc(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
+        self.compute_round(challs, sum)
     }
 }
 
-impl<'a, F> SumcheckBase<2> for BaseFoldSumcheckTimeEfficient<'a, F>
+
+impl<'a, F, const TE: bool> SumcheckBase<2> for BaseFoldSumcheckBasic<'a, F, TE>
     where F: RingStore<Type: Field + FiniteRing>
 {
     type F = F;
@@ -574,7 +480,7 @@ impl<'a, F> SumcheckBase<2> for BaseFoldSumcheckTimeEfficient<'a, F>
         let field = self.field();
         let vcmini = self.vc - challs.len();
         let mut scstmut = self.scalarstate.borrow_mut();
-        if vcmini < self.vc {
+        if challs.len() > 0 {
             field.mul_assign(&mut scstmut,
                 MultilinearBasis::new(field, &self.z[vcmini..(vcmini + 1)]).evaluate(&challs[..1]));
         }
@@ -590,13 +496,19 @@ impl<'a, F> SumcheckBase<2> for BaseFoldSumcheckTimeEfficient<'a, F>
 }
 
 
-impl<'a, F> Sumcheck<2, 1, true> for BaseFoldSumcheckTimeEfficient<'a, F>
+impl<'a, F, const TE: bool> Sumcheck<2, 1> for BaseFoldSumcheckBasic<'a, F, TE>
     where F: RingStore<Type: Field + FiniteRing>
 {
     type SCB = Self;
 
+    fn TE() -> bool { TE }
+
     fn get_base(&self) -> &Self {
         &self
+    }
+
+    fn get_reference(&self) -> [&[El<F>]; 1] {
+        [self.evals]
     }
 
     fn get_workspace(&self) -> [&RefCell<Vec<El<F>>>; 1] {
@@ -614,44 +526,129 @@ impl<'a, F> Sumcheck<2, 1, true> for BaseFoldSumcheckTimeEfficient<'a, F>
 }
 
 
-// pub struct BaseFoldSumcheckDoubleEfficient<'a, R>
-//     where R: RingStore
-// {
-//     field: &'a R,
-//     vc: usize,
-//     m: usize,
-//     ws: Vec<El<R>>,
-//     z: Vec<El<R>>,
-//     third_point: i32
-// }
+pub struct BaseFoldSumcheckDoubleEfficient<'a, R>
+    where R: RingStore
+{
+    bscb: BaseFoldSumcheckBasic<'a, R, true>,
+    m: usize,
+}
 
-// impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
-//     where F: RingStore<Type: Field + FiniteRing>
-// {
-//     type F = F;
+impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
+    where F: RingStore<Type: Field + FiniteRing>
+{
+    // fn new(field: &'a F, evals: &'a [El<F>], z: &'a [El<F>]) -> Self
+    fn new(field: &'a F, evals: &'a [El<F>], z: Vec<El<F>>) -> Self
+    {
+        let zclone = z.iter().map(|el| field.clone_el(el)).collect_vec();
+        let bscb = BaseFoldSumcheckBasic::<'a, F, true>::new(field, evals, zclone);
+        let m = bscb.vc.div_ceil(2);
+        {
+            let mut ws = bscb.ws.borrow_mut();
+            ws.shrink_to(1 << m); // NOTE: basic basefoldsumcheck reserves too much
+            let vcminm = bscb.vc - m;
 
-//     fn new(field: &'a F, evals: &'a [El<F>], isevals: bool, z: Vec<El<F>>) -> Self
-//     {
-//         assert!(isevals == true);
-//         let vc = z.len();
-//         assert!(1 << vc == evals.len());
-//         let m = vc.div_ceil(2);
-//         let mut ws = Vec::with_capacity(1 << (vc - m));
-//         evals.chunks_exact(1 << (vc - m)).for_each(|chunk|
-//             ws.iter_mut().zip(chunk).for_each(|(wsi, evali)| field.add_assign_ref(wsi, evali))
-//         );
-//         Self { field, vc, m, ws, z, third_point: -1 }
-//     }
+            // TODO: refactor this as partial evaluation but msb->lsb
+            let eq = MultilinearBasisEvals::new(field, &z[..vcminm]);
+            evals.chunks_exact(1 << vcminm).for_each(|chunki| ws.push(
+                chunki.iter().zip(eq.clone()).fold(field.zero(), |acc, (evalj, eqj)|
+                    field.add(acc, field.mul_ref(&evalj, &eqj)))
+            ));
+        }
+        Self { bscb, m }
+    }
 
-//     fn compute_round(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
-//         let i = challs.len();
-//         assert!(i <= self.vc - self.m);
-//         let vcmini = self.vc - i;
-//         let scalar = MultilinearBasis::new(self.field, &self.z[vcmini..]).evaluate(challs);
+    fn compute_round_bsc(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
+        let i = challs.len();
+        let field = self.bscb.field;
+        let vc = self.bscb.vc;
+        let z = &self.bscb.z;
 
-//         unimplemented!()
-//     }
-// }
+        if i >= self.m {
+            if i == self.m {
+                let mut ws = self.bscb.ws.borrow_mut();
+                *ws = evaluate_at_fromevals(field, vc, &challs[1..], self.bscb.evals);
+                let mut scstmut = self.bscb.scalarstate.borrow_mut();
+                *scstmut = MultilinearBasis::new(field, &z[(vc - i + 1)..]).evaluate(&challs[1..]);
+            }
+            return self.compute_round(challs, sum)
+        }
+
+        let mut hzero = field.zero();
+        let mut hone = field.zero();
+        let otherpoint = self.get_base().get_other_eval_points()[0];
+        let other = field.int_hom().map(otherpoint);
+        let mut hother = field.zero();
+
+        let eq1 = MultilinearBasisEvals::new(field, &z[(vc - self.m)..(vc - i - 1)]);
+        let eq2 = MultilinearBasisEvals::new(field, challs);
+
+        self.get_base().ws.borrow().chunks_exact(1<<(self.m-i)).zip(eq2).for_each(|(wschunkj, eqj)| {
+
+            let (wsz, wso) = wschunkj.split_at(1 << (self.m - i - 1));
+
+            let mut tmpz = field.zero();
+            let mut tmpo = field.zero();
+            let mut tmpother = field.zero();
+
+            izip!(wsz, wso, eq1.clone()).for_each(|(wszk, wsok, eqk)| {
+                field.add_assign(&mut tmpz, field.mul_ref(&wszk, &eqk));
+                
+                if sum.is_none() {
+                    field.add_assign(&mut tmpo, field.mul_ref(&wsok, &eqk));
+                }
+
+                field.add_assign(&mut tmpother, field.mul_ref_fst(&eqk, PolyEvals::new(
+                        [field.clone_el(&wszk), field.clone_el(&wsok)], [], []
+                    ).degone_at(field, otherpoint)))
+            });
+
+            field.add_assign(&mut hzero, field.mul_ref(&tmpz, &eqj));
+            if sum.is_none() { field.add_assign(&mut hone, field.mul_ref(&tmpo, &eqj)) };
+            field.add_assign(&mut hother, field.mul_ref(&tmpother, &eqj));
+        });
+
+        let scalar = MultilinearBasis::new(field, &z[(vc - i)..]).evaluate(challs);
+        field.mul_assign(&mut hzero,
+            field.mul_ref_fst(&scalar, field.sub_ref_snd(field.one(), &z[vc - i - 1])));
+        if sum.is_none() {
+            field.mul_assign(&mut hone, field.mul_ref(&scalar, &z[vc - i - 1]));
+        }
+        field.mul_assign(&mut hother, field.mul_ref_fst(&scalar,
+            MultilinearBasis::new(field, &z[(vc - i - 1)..(vc - i)]).evaluate(&[other])));
+
+        hone = if let Some(sum) = sum { field.sub_ref_snd(sum, &hzero) } else { hone };
+        PolyEvals::new([hzero, hone], [otherpoint], [hother])
+    }
+}
+
+impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckDoubleEfficient<'a, F>
+    where F: RingStore<Type: Field + FiniteRing>
+{
+    type SCB = BaseFoldSumcheckBasic<'a, F, true>;
+
+    fn TE() -> bool { true }
+
+    fn get_base(&self) -> &Self::SCB {
+        &self.bscb
+    }
+
+    fn get_reference(&self) -> [&[El<F>]; 1] {
+        // should not be called
+        unimplemented!()
+    }
+
+    fn get_workspace(&self) -> [&RefCell<Vec<El<F>>>; 1] {
+        [&self.get_base().ws]
+    }
+
+    fn compute_term(ring: &F, at: [&El<F>; 1], scalar: &El<F>) -> El<F> {
+        <Self::SCB as Sumcheck<2, 1>>::compute_term(ring, at, scalar)
+    }
+
+    fn check_eval(&self, rX: Vec<El<F>>) -> bool {
+        self.get_base().check_eval(rX)
+    }
+}
 
 
 // outputs f(a) where f(X) = interpolate((x, y1), (-x, y2))
@@ -681,20 +678,21 @@ mod tests {
     use feanor_math::rings::field::AsField;
 
     use crate::util::gen_vector;
-    use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube, coeffs_to_evals_inplace};
+    use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube,
+        evaluate_at_fromcoeff, coeffs_to_evals_inplace};
 
     const VREP: usize = 100;
+    type FieldImpl = AsField<Zn>;
 
     #[test]
     fn test_basefolding() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        type FieldImpl = AsField<Zn>;
 
         let N = 7;
         let k0 = 1;
         let c = 2;
-        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_, BaseFoldSumcheckBasic<_, false>>::new(&field, N, k0, c, VREP);
         let vc = bf.polyring().indeterminate_count();
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
@@ -728,12 +726,11 @@ mod tests {
     fn test_basefoldpcs_slow() {
         
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type FieldImpl = AsField<Zn>;
 
         let N = 5;
         let k0 = 2;
         let c = 2;
-        let bf = BaseFoldPCS::<_, BaseFoldSumcheckSpaceEfficient<_>>::new(&field, N, k0, c, VREP);
+        let bf = BaseFoldPCS::<_, BaseFoldSumcheckBasic<_, false>>::new(&field, N, k0, c, VREP);
 
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
             field.random_element(rand::random::<u64>), 1 << N);
@@ -755,7 +752,6 @@ mod tests {
     fn test_basefoldsumchecksum() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type FieldImpl = AsField<Zn>;
 
         let N = 5;
         let polyring = MultivariatePolyRingImpl::new(field.clone(), N);
@@ -777,7 +773,9 @@ mod tests {
 
         assert_el_eq!(field, &field.add(hd.at(&field, 0), hd.at(&field, 1)), &sum);
 
-        let bsc = BaseFoldSumcheckSpaceEfficient::new(&field, &randomcoeffs, false, zvec);
+        let mut randomevals = randomcoeffs.iter().map(|el| field.clone_el(el)).collect_vec();
+        coeffs_to_evals_inplace(&field, N, &mut randomevals);
+        let bsc = BaseFoldSumcheckBasic::<_, false>::new(&field, &randomevals, zvec);
         let mut hdfast = bsc.compute_round(&[], Some(sum));
         // let mut hdfast = bsc.compute_round(&[], None);
         
@@ -800,52 +798,76 @@ mod tests {
         }
     }
 
-    use tracing_subscriber::prelude::*;
+    // use tracing_subscriber::prelude::*;
 
     #[test]
-    fn test_basefoldpcs_fast() {
-
-        let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new().build();
-        tracing_subscriber::registry().with(chrome_layer).init();
+    fn test_basefoldpcs_fast()
+    {
+        // let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new().build();
+        // tracing_subscriber::registry().with(chrome_layer).init();
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type FieldImpl = AsField<Zn>;
-
-        // let N = 6;
-        let N = 23;
+        
+        let N = 16;
         let k0 = 2;
         let c = 2;
         let bf = BaseFoldPCS::<_,
-            BaseFoldSumcheckSpaceEfficient<_>
-            // BaseFoldSumcheckTimeEfficient<_>
+            BaseFoldSumcheckBasic<_, true>
+            // BaseFoldSumcheckBasic<_, false>
             // BaseFoldSumcheckDoubleEfficient<_>
         >::new(&field, N, k0, c, VREP);
 
-        use rand::RngCore;
-        use rand_seeder::{Seeder, SipRng};
-        let mut rng: SipRng = Seeder::from("TestingBaseFold").into_rng();
-
         let randomcoeffs = gen_vector::<El<FieldImpl>>(||
-            // field.random_element(rand::random::<u64>), 1 << N);
-            field.random_element(|| rng.next_u64()), 1 << N);
-        let poly = from_hypercube_coeffs(bf.polyring(), &randomcoeffs);
+            field.random_element(rand::random::<u64>), 1 << N);
 
-        // let zinner = gen_vector::<El<FieldImpl>>(|| field.random_element(rand::random::<u64>), N);
-        let zinner = gen_vector::<El<FieldImpl>>(|| field.random_element(|| rng.next_u64()), N);
-        let z = (0..N).map_fn(|i| field.clone_el(&zinner[i]));
-        let y = bf.polyring().evaluate(&poly, &z, bf.coeffring().identity());
+        let z = gen_vector::<El<FieldImpl>>(|| field.random_element(rand::random::<u64>), N);
+        let y = evaluate_at_fromcoeff(&field, N, &z, &randomcoeffs).pop().unwrap();
 
         let com = bf.commit(&randomcoeffs);
 
-        let zvec = z.into_iter().collect_vec();
-        let clonedzvec= zvec.iter().map(|el| field.clone_el(el)).collect_vec();
-
         let mut evals = randomcoeffs.iter().map(|el| field.clone_el(el)).collect_vec();
         coeffs_to_evals_inplace(&field, N, &mut evals);
-        let proof = bf.eval(&com, zvec, y, Some(&randomcoeffs), Some(&evals));
+        let clonedz = z.iter().map(|el| field.clone_el(el)).collect_vec();
+        let proof = bf.eval(&com, clonedz, field.clone_el(&y), Some(&randomcoeffs), Some(&evals));
 
-        assert!(bf.verify(&com, &clonedzvec, y, &randomcoeffs, proof));
+        assert!(bf.verify(&com, &z, y, &randomcoeffs, proof));
     }
+    
+    // fn test_basefoldpcs_fast<'a, 'b, F, BF>(N: usize, field: &'a F, bf: &'a BF)
+    //     where BF: MultilinearPCS<'b>, 'a: 'b, F: RingStore<Type: Field + FiniteRing> + Clone,
+    //     <<BF as MultilinearPCS<'b>>::Poly as RingStore>::Type: RingExtension<BaseRing = F>
+    // {
+    //     let randomcoeffs = gen_vector::<El<F>>(||
+    //         field.random_element(rand::random::<u64>), 1 << N);
 
+    //     let z = gen_vector::<El<F>>(|| field.random_element(rand::random::<u64>), N);
+    //     let y = evaluate_at_fromcoeff(field, N, &z, &randomcoeffs).pop().unwrap();
+
+    //     let com = bf.commit(&randomcoeffs);
+
+    //     let mut evals = randomcoeffs.iter().map(|el| field.clone_el(el)).collect_vec();
+    //     coeffs_to_evals_inplace(field, N, &mut evals);
+    //     let proof = bf.eval(&com, &z, field.clone_el(&y), Some(&randomcoeffs), Some(&evals));
+
+    //     assert!(bf.verify(&com, &z, y, &randomcoeffs, proof));
+    // }
+
+    // use tracing_subscriber::prelude::*;
+
+    // #[test]
+    // fn test_basefoldpcs_te() {
+
+    //     let (chrome_layer, _guard) = tracing_chrome::ChromeLayerBuilder::new().build();
+    //     tracing_subscriber::registry().with(chrome_layer).init();
+
+    //     let field = Zn::new(65537).as_field().ok().unwrap();
+
+    //     let N = 12;
+    //     let k0 = 2;
+    //     let c = 2;
+    //     let bf = BaseFoldPCS::<_, BaseFoldSumcheckBasic<_, true>>::new(&field, N, k0, c, VREP);
+
+    //     test_basefoldpcs_fast(N, &field, &bf);
+    // }
 }
 

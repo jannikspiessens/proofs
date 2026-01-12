@@ -170,11 +170,13 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
     type Item = El<F>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let field = self.mb.ring;
         if self.ind < ((1 << self.mb.z.len()) - 1) {
-            let field = self.mb.ring;
             let res = field.clone_el(&self.cur);
 
             self.ind += 1;
+            // TODO: use bits instead of bits_from_int here
+            // store bit repr of ind istead
             let j = bits_from_int(self.ind, self.mb.z.len()).position(|b| b == 1).unwrap();
             let mut scalar = field.div(&self.mb.z[j], &field.sub_ref_snd(field.one(), &self.mb.z[j]));
             if j > 0 {
@@ -187,14 +189,14 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
             Some(res)
         } else if self.ind == ((1 << self.mb.z.len()) - 1) {
             self.ind += 1;
-            Some(self.mb.ring.clone_el(&self.cur))
+            Some(field.clone_el(&self.cur))
         } else {
             None
         }
     }
 }
 
-// TODO: remove redundancy in following two functions
+// TODO: remove redundancy in following functions
 pub fn evaluate_at_fromevals<F>(field: &F, logsize: usize, at: &[El<F>], evals: &[El<F>])
     -> Vec<El<F>>
     where F: FieldStore<Type: Field>
@@ -206,12 +208,15 @@ pub fn evaluate_at_fromevals<F>(field: &F, logsize: usize, at: &[El<F>], evals: 
     assert!(at.len() > 0);
 
     let reslen = 1 << (logsize - at.len());
-    let mut res = gen_vector::<El<F>>(|| field.zero(), reslen);
-    let eq = MultilinearBasisEvals::new(field, at);
+    let mut res = Vec::with_capacity(reslen);
+    let mut eq = MultilinearBasisEvals::new(field, at);
+    let first = eq.next().unwrap();
 
-    evals.chunks_exact(reslen).zip(eq).for_each(|(evalchunk, eqi)|
-        res.iter_mut().zip(evalchunk).for_each(|(rsi, chunki)|
-            *rsi = field.add_ref_fst(rsi, field.mul_ref(chunki, &eqi))));
+    let (firstchunk, rest) = evals.split_at(reslen);
+    firstchunk.iter().for_each(|evalj| res.push(field.mul_ref(&evalj, &first)));
+    rest.chunks_exact(reslen).zip(eq).for_each(|(evalchunk, eqi)|
+        res.iter_mut().zip(evalchunk).for_each(|(rsj, chunkj)|
+            field.add_assign(rsj, field.mul_ref(chunkj, &eqi))));
     res
 }
 
@@ -236,6 +241,7 @@ pub fn evaluate_at_fromevals_inplace<F>(field: &F, logsize: usize, at: &[El<F>],
 }
 
 
+// TODO: remove, not used anymore
 pub fn evaluate_at_fromcoeff<R>(ring: &R, logsize: usize, at: &[El<R>], coeff: &[El<R>]) -> Vec<El<R>>
     where R: RingStore
 {
