@@ -90,12 +90,8 @@ impl<'a, R: RingStore> Clone for FiatShamirSim<'a, R> {
     } 
 }
 
-#[cfg(test)]
 pub mod tests {
     use super::*;
-    use rand::Rng;
-    use feanor_math::rings::zn::ZnRingStore;
-    use feanor_math::rings::zn::zn_64::Zn;
 
     pub fn gen_random<R>(ring: &R, len: usize, seed: Option<&str>) -> Vec<El<R>>
         where R: RingStore<Type: FiniteRing>
@@ -112,6 +108,14 @@ pub mod tests {
         assert!(inp.len() == out.len());
         assert!((0..inp.len()).all(|i| ring.eq_el(&inp[i], &out[(i+by)%out.len()])))
     }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use rand::Rng;
+    use feanor_math::rings::zn::ZnRingStore;
+    use feanor_math::rings::zn::zn_64::Zn;
 
     #[test]
     fn test_bits() {
