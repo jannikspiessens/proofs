@@ -155,6 +155,7 @@ pub trait Sumcheck<const D: usize, const N: usize>
 
     fn check_eval(&self, rX: Vec<El<SCF<Self,D,N>>>) -> bool;
 
+    #[instrument(skip_all)]
     fn compute_round(&self, challs: &[El<SCF<Self,D,N>>],
         sum: Option<El<SCF<Self,D,N>>>) -> PolyEvals<SCF<Self,D,N>, {D - 1}>
     {

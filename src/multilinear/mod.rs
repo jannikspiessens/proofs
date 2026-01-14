@@ -300,6 +300,7 @@ pub fn evalscalars_to_coeffscalars<'a, R>(ring: &'a R, logsize: usize, scalars: 
 }
 
 
+// TODO: make ref versions of these?
 pub fn coeffs_to_evals_inplace<R: RingStore>(ring: &R, logsize: usize, coeffs: &mut [El<R>]) {
     debug_assert!(coeffs.len() == 1 << logsize);
     (1..=logsize).for_each(|i| {

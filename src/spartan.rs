@@ -28,16 +28,11 @@ pub struct SpartanPIOP<'a, PCS: MultilinearPCS<'a>>
     vc_cols: usize,
     tau: Vec<Coeff<PCS::Poly>>,
     r1cs: R1CS<'a, CoeffRing<PCS::Poly>>,
-    // z: RefCell<Vec<Coeff<PCS::Poly>>>,
-    // zA: RefCell<Vec<Coeff<PCS::Poly>>>,
-    // zB: RefCell<Vec<Coeff<PCS::Poly>>>,
-    // zC: RefCell<Vec<Coeff<PCS::Poly>>>,
     z: Vec<Coeff<PCS::Poly>>, // TODO: can also be &'a reference
     zA: Vec<Coeff<PCS::Poly>>,
     zB: Vec<Coeff<PCS::Poly>>,
     zC: Vec<Coeff<PCS::Poly>>,
     pcs: PCS,
-    // zevals: Vec<Coeff<PCS::Poly>>,
     zcoeff: Vec<Coeff<PCS::Poly>>,
     com: PCS::C
 }
@@ -52,11 +47,7 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
         assert!(z.len().is_power_of_two());
         let vc_cols = z.len().ilog2() as usize;
 
-        // NOTE: not necessarily faster in blind setting with time-efficient Basefold sumcheck
-        // let zevals = z.iter().map(|el| field.clone_el(el)).collect_vec();
-        // let zevals = Vec::new();
-
-        // TODO: avoid cloen here?
+        // TODO: avoid clone here?
         let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
         evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
 
@@ -78,12 +69,7 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
             vc_cols,
             tau,
             r1cs,
-            // z: RefCell::new(z),
-            // zA: RefCell::new(zA),
-            // zB: RefCell::new(zB),
-            // zC: RefCell::new(zC),
             z, zA, zB, zC,
-            // zevals,
             zcoeff,
             com
         }
@@ -156,7 +142,7 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
 }
 
 impl<'a, PCS> SpartanPIOP<'a, PCS>
-    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     pub fn execute(&'a self) -> bool {
         let rowchecksum = self.field().zero();
@@ -245,7 +231,7 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheck<'a, PCS>
 }
 
 impl<'a, PCS> Sumcheck<3, 3> for SpartanRowcheck<'a, PCS>
-    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type SCB = SpartanRowcheckBase<'a, PCS>;
 
@@ -345,7 +331,7 @@ impl<'a, PCS> SpartanLincheck<'a, PCS>
     pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>, rA: &[Coeff<PCS::Poly>], rB: &[Coeff<PCS::Poly>],
         rC: &[Coeff<PCS::Poly>], rX: Vec<Coeff<PCS::Poly>>) -> Self
     {
-        // TODO: try immediately putting this in RefCell and then using that to return reference?
+        // TODO: can we avoid having to store M for duration 'a ?
         let M = SpartanLincheck::get_zM(&piop, rA, rB, rC, rX);
         let base = SpartanLincheckBase::for_piop(piop);
         Self { base, M, wsM: RefCell::default(), wsz: RefCell::default() }
@@ -384,7 +370,7 @@ impl<'a, PCS> SpartanLincheck<'a, PCS>
 }
 
 impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
-    where PCS: MultilinearPCS<'a> + 'a, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
+    where PCS: MultilinearPCS<'a>, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type SCB = SpartanLincheckBase<'a, PCS>;
 
@@ -420,10 +406,6 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
             debug_assert!(ring.eq_el(&y, &ev[0]));
         }
         let clonedrX = rX.iter().map(|el| ring.clone_el(el)).collect_vec();
-        // let zevals = (self.base.piop.zevals.len() == 1 << self.base.piop.vc_cols).then(||
-        //     &*self.base.piop.zevals);
-        // let proof = self.base.piop.pcs.eval(&self.base.piop.com, rX,
-        //     ring.clone_el(&y), Some(&self.base.piop.zcoeff), zevals);
         let proof = self.base.piop.pcs.eval(&self.base.piop.com, rX,
             ring.clone_el(&y), Some(&self.base.piop.zcoeff), Some(&self.base.piop.z));
         let clonedy = ring.clone_el(&y);
@@ -454,19 +436,4 @@ mod tests {
 
         assert!(spartan.execute());
     }
-
-    // #[test]
-    // fn test_spartan_se() {
-
-    //     let field = Zn::new(65537).as_field().ok().unwrap();
-    //     type FieldImpl = AsField<Zn>;
-
-    //     let N = 14;
-        
-    //     let spartan: SpartanPIOP::<'_, BaseFoldPCS<'_, RSFoldableCode<FieldImpl>,
-    //         BaseFoldSumcheckSpaceEfficient<FieldImpl>>>
-    //             = SpartanPIOP::random(&field, N, N+1, VREP);
-
-    //     assert!(spartan.execute());
-    // }
 }
