@@ -90,28 +90,26 @@ impl<'a, R: RingStore> Clone for FiatShamirSim<'a, R> {
     } 
 }
 
-pub mod tests {
-    use super::*;
 
-    pub fn gen_random<R>(ring: &R, len: usize, seed: Option<&str>) -> Vec<El<R>>
-        where R: RingStore<Type: FiniteRing>
-    {
-        if let Some(seed) = seed {
-            let mut rng: SipRng = Seeder::from(seed).into_rng();
-            gen_vector::<El<R>>(|| ring.random_element(|| rng.next_u64()), len)
-        } else {
-            gen_vector::<El<R>>(|| ring.random_element(rand::random::<u64>), len)
-        }
-    }
-
-    pub fn test_rot<R: RingStore>(ring: &R, inp: &Vec<El<R>>, out: &Vec<El<R>>, by: usize) {
-        assert!(inp.len() == out.len());
-        assert!((0..inp.len()).all(|i| ring.eq_el(&inp[i], &out[(i+by)%out.len()])))
+pub fn gen_random<R>(ring: &R, len: usize, seed: Option<&str>) -> Vec<El<R>>
+    where R: RingStore<Type: FiniteRing>
+{
+    if let Some(seed) = seed {
+        let mut rng: SipRng = Seeder::from(seed).into_rng();
+        gen_vector::<El<R>>(|| ring.random_element(|| rng.next_u64()), len)
+    } else {
+        gen_vector::<El<R>>(|| ring.random_element(rand::random::<u64>), len)
     }
 }
 
+pub fn test_rot<R: RingStore>(ring: &R, inp: &Vec<El<R>>, out: &Vec<El<R>>, by: usize) {
+    assert!(inp.len() == out.len());
+    assert!((0..inp.len()).all(|i| ring.eq_el(&inp[i], &out[(i+by)%out.len()])))
+}
+
+
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use super::*;
     use rand::Rng;
     use feanor_math::rings::zn::ZnRingStore;

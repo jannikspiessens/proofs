@@ -483,7 +483,7 @@ mod tests {
     use feanor_math::rings::zn::zn_64::Zn;
     use feanor_math::rings::zn::ZnRingStore;
 
-    use crate::util::tests::{test_rot, gen_random};
+    use crate::util::{test_rot, gen_random};
 
     #[test]
     fn test_matmul_repeat() {
