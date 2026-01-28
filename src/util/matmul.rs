@@ -1,7 +1,12 @@
 use std::collections::HashSet;
+use std::ops::Range;
+use rand::Rng;
+
 use feanor_math::ring::*;
 use feanor_math::homomorphism::{CanHom, Homomorphism, CanHomFrom};
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
+
+use crate::util::{gen_random, contains_range};
 
 pub trait MatrixMul: Clone {
     type R: RingStore;
@@ -11,6 +16,10 @@ pub trait MatrixMul: Clone {
     fn rows(&self) -> usize;
     fn columns(&self) -> usize;
     fn get(&self, i: usize, j: usize) -> &El<Self::R>;
+
+    // TODO: change mul to mulit where can be used
+    fn mulit(&self, rhs: &[El<Self::R>]) -> impl Iterator<Item = El<Self::R>>;
+
     fn mul(&self, rhs: &[El<Self::R>]) -> Vec<El<Self::R>>;
 
     fn get_map<Rout>(&self, i: usize, j: usize, hom: &CanHom<&Self::R, &Rout>) -> El<Rout>
@@ -69,16 +78,13 @@ impl<'a, R: RingStore> SparseMatrixMul<'a, R>
     }
 }
 
-use rand::{Rng, RngCore};
-use rand_seeder::{Seeder, SipRng};
-
 // TODO: implement data structure differently so that its size does not depend on dimensions
 impl<'a, R> SparseMatrixMul<'a, R>
     where R: FiniteRingStore<Type: FiniteRing>
 {
-    pub fn random(ring: &'a R, rows: usize, columns: usize, rowhw: usize, desc: &str) -> Self {
-
-        let mut rng: SipRng = Seeder::from(desc).into_rng();
+    pub fn random<RNG: Rng>(ring: &'a R, mut rng: RNG,
+        rows: usize, columns: usize, rowhw: usize, desc: &str) -> Self
+    {
         Self {
             ring,
             rows,
@@ -86,14 +92,12 @@ impl<'a, R> SparseMatrixMul<'a, R>
             data:   (0..rows).map(|_| {
                         let mut seen = HashSet::<usize>::new();
                         while seen.len() < rowhw {
-                            // seen.insert(rand::random_range(0..columns));
                             seen.insert(rng.random_range(0..columns));
                         }
                         let mut sorted = seen.into_iter().collect::<Vec<_>>();
                         sorted.sort();
                         sorted.into_iter().map(|j|
-                            // (j, ring.random_element(rand::random::<u64>))).collect()
-                            (j, ring.random_element(|| rng.next_u64()))).collect()
+                            (j, ring.random_element(|| rng.random::<u64>()))).collect()
                     }).collect(),
             zero: ring.zero(),
             desc: desc.to_string()
@@ -155,12 +159,19 @@ impl<'a, Rg: RingStore> MatrixMul for SparseMatrixMul<'a, Rg> {
         { &x } else { &self.zero }
     }
 
-    fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> {
+    fn mulit(&self, rhs: &[El<Self::R>]) -> impl Iterator<Item = El<Self::R>> {
         debug_assert!(rhs.len() == self.columns());
-        (0..self.rows).map(|i| self.data[i].iter().map(|(j, el)|
-            self.ring().mul_ref(el, &rhs[*j])).fold(
-            self.ring.zero(), |acc, x| self.ring.add(acc, x))).collect::<Vec<_>>()
+        self.data.iter().map(|row| row.iter().fold(self.ring.zero(),
+            |acc, (j, el)| self.ring.add(acc, self.ring.mul_ref(el, &rhs[*j]))))
     }
+    // fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> {
+    //     debug_assert!(rhs.len() == self.columns());
+    //     (0..self.rows).map(|i| self.data[i].iter().map(|(j, el)|
+    //         self.ring().mul_ref(el, &rhs[*j])).fold(
+    //         self.ring.zero(), |acc, x| self.ring.add(acc, x))).collect::<Vec<_>>()
+    // }
+    
+    fn mul(&self, rhs: &[El<Self::R>]) -> Vec<El<Self::R>> { self.mulit(rhs).collect() }
 }
 
 
@@ -182,6 +193,33 @@ impl<'a, R: RingStore> DenseMatrixMul<'a, R> {
             rows: data.len() / columns,
             columns,
             data,
+            desc: desc.to_string()
+        }
+    }
+
+    // TODO: add to MatrixMul trait?
+    pub fn submatmul(&self, rows: Range<usize>, columns: Range<usize>, rhs: &[El<R>])
+        -> impl Iterator<Item = El<R>>
+    {
+        assert!(contains_range(0..self.rows(), &rows)
+            && contains_range(0..self.columns(), &columns));
+        debug_assert!(rhs.len() == columns.clone().len());
+        let ncol = self.columns();
+        let subrows = &self.data[rows.start*ncol..rows.end*ncol];
+        subrows.chunks_exact(self.columns()).map(move |row|
+            row[columns.clone()].iter().zip(rhs.iter()).fold(self.ring().zero(), |acc, (ri, rhsi)|
+                self.ring().add(acc, self.ring().mul_ref(ri, rhsi))))
+    }
+}
+
+impl<'a, R: RingStore<Type: FiniteRing>> DenseMatrixMul<'a, R> {
+    pub fn random<RNG: Rng>(ring: &'a R, rng: RNG, rows: usize, columns: usize, desc: &str) -> Self
+    {
+        Self {
+            ring,
+            rows,
+            columns,
+            data: gen_random(ring, rng, rows*columns),
             desc: desc.to_string()
         }
     }
@@ -224,12 +262,12 @@ impl<'a, Rg: RingStore> MatrixMul for DenseMatrixMul<'a, Rg> {
         &self.data[i*self.columns + j]
     }
 
-    fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> {
+    fn mulit(&self, rhs: &[El<Self::R>]) -> impl Iterator<Item = El<Rg>> {
         debug_assert!(rhs.len() == self.columns());
-        (0..self.rows).map(|i| (0..self.columns).map(|j|
-        self.ring.mul_ref(&self.get(i, j), &rhs[j])).fold(
-            self.ring.zero(), |acc, x| self.ring.add(acc, x))).collect::<Vec<_>>()
+        self.submatmul(0..self.rows(), 0..self.columns(), rhs)
     }
+
+    fn mul(&self, rhs: &[El<Self::R>]) -> Vec<El<Rg>> { self.mulit(rhs).collect() }
 }
 
 
@@ -294,10 +332,12 @@ impl<'a, Rg: RingStore> MatrixMul for DiagMatrixMul<'a, Rg> {
         }
     }
 
-    fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> {
+    fn mulit(&self, rhs: &[El<Rg>]) -> impl Iterator<Item = El<Rg>> {
         debug_assert!(rhs.len() == self.columns());
-        self.data.iter().zip(rhs).map(|(d, r)| self.ring().mul_ref(d, r)).collect()
+        self.data.iter().zip(rhs).map(|(d, r)| self.ring().mul_ref(d, r))
     }
+
+    fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> { self.mulit(rhs).collect() }
 }
 
 
@@ -398,6 +438,11 @@ impl<'a, MM: MatrixMul> MatrixMul for RepeatMatrixMul<'a, MM>
         }
     }
 
+    fn mulit(&self, rhs: &[El<Self::R>]) -> impl Iterator<Item = El<Self::R>> {
+        // TODO: can this be faster?
+        self.mul(rhs).into_iter()
+    }
+
     fn mul(&self, rhs: &[El<MM::R>]) -> Vec<El<MM::R>> {
         let mut res: Vec<_> = (0..self.basemm.rows()*self.repmm.rows()).map(|_|
             self.ring().zero()).collect();
@@ -471,6 +516,10 @@ impl<'a, Rg: RingStore> MatrixMul for HadamardMatrixMul<'a, Rg> {
         self.mm.get(i, j)
     }
 
+    fn mulit(&self, rhs: &[El<Self::R>]) -> impl Iterator<Item = El<Self::R>> {
+        self.mm.mulit(rhs)
+    }
+
     fn mul(&self, rhs: &[El<Rg>]) -> Vec<El<Rg>> {
         self.mm.mul(rhs)
     }
@@ -483,17 +532,18 @@ mod tests {
     use feanor_math::rings::zn::zn_64::Zn;
     use feanor_math::rings::zn::ZnRingStore;
 
-    use crate::util::{test_rot, gen_random};
+    use crate::util::test_rot;
 
     #[test]
     fn test_matmul_repeat() {
         let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
         
         let rowcount = 11;
         let columncount = 23;
 
         let seed = format!("test_plainmatmul_{}{}", rowcount, columncount);
-        let data = gen_random(&field, rowcount*columncount, Some(&seed));
+        let data = gen_random(&field, &mut rng, rowcount*columncount);
         let mm = DenseMatrixMul::new(&field, columncount, data, &seed);
 
         let rowrep = 2;
@@ -514,9 +564,56 @@ mod tests {
 
         let mmrep = RepeatMatrixMul::new(&mm, rowrep, columnrep);
 
-        let testin = gen_random(&field, columncount*columnrep, None);
+        let testin = gen_random(&field, &mut rng, columncount*columnrep);
 
         test_rot(&field, &mmrep.mul(&testin), &mmrepdense.mul(&testin), 0);
+    }
+
+    #[test]
+    fn test_submatmul() {
+        let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
+        
+        let r = 10;
+        let c = 12;
+
+        let mm = DenseMatrixMul::random(&field, &mut rng, r, c, "test_submatmul");
+
+        let mut rhs1 = gen_random(&field, &mut rng, c-4);
+        let rhs2 = gen_random(&field, &mut rng, 4);
+
+        let res11 = mm.submatmul(0..5, 0..(c-4), &rhs1).collect::<Vec<_>>();
+        let res12 = mm.submatmul(0..5, (c-4)..c, &rhs2).collect::<Vec<_>>();
+
+        rhs1.extend(rhs2);
+        let res2 = mm.submatmul(5..r, 0..c, &rhs1);
+
+        let rest = mm.mul(&rhs1);
+       
+        assert!(res11.iter().zip(res12).map(|(l,r)| field.add_ref_fst(l, r))
+            .chain(res2).zip(rest).all(|(l,r)| field.eq_el(&l, &r)));
+    }
+
+    #[test]
+    fn test_matmulit() {
+        let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
+        
+        let r = 10;
+        let c = 12;
+
+        let mm = DenseMatrixMul::random(&field, &mut rng, r, c, "test_matmulit");
+
+        let rhs1 = gen_random(&field, &mut rng, c);
+        let rhs2 = gen_random(&field, &mut rng, c);
+
+        let c = gen_random(&field, &mut rng, 1).pop().unwrap();
+
+        let rhs3 = rhs1.iter().zip(rhs2.iter()).map(|(l,r)|
+            field.add_ref_fst(l, field.mul_ref(&c, r))).collect::<Vec<_>>();
+       
+        assert!(mm.mulit(&rhs1).zip(mm.mulit(&rhs2)).map(|(l,r)| field.add(l,field.mul_ref_snd(r, &c)))
+            .zip(mm.mulit(&rhs3)).all(|(l,r)| field.eq_el(&l, &r)))
     }
 }
 

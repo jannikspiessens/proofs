@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use rand::Rng;
 
 use feanor_math::field::{Field, FieldStore};
 use feanor_math::ring::{RingStore, El};
@@ -7,7 +8,7 @@ use feanor_math::rings::finite::FiniteRing;
 use crate::util::{bits_from_int, int_from_bits};
 use crate::multilinear::{MultilinearBasis, MultilinearBasisEvals};
 
-use crate::matmul::{MatrixMul, SparseMatrixMul};
+use crate::util::matmul::{MatrixMul, SparseMatrixMul};
 
 pub struct R1CSMatrix<'a, R: RingStore> {
     rowlogsize: usize,
@@ -94,13 +95,13 @@ impl<'a, F> R1CS<'a, F>
 {
     // Generates random R1CS instances such that z is a valid transcript
     // we assume that the input vectors are ordered from lsb to msb
-    pub fn random_from(field: &'a F, z: &[El<F>], rowlen: usize)
+    pub fn random_from<RNG: Rng>(field: &'a F, mut rng: RNG, z: &[El<F>], rowlen: usize)
         -> (Self, Vec<El<F>>, Vec<El<F>>, Vec<El<F>>)
     {
         debug_assert!(!z.iter().all(|zi| field.is_zero(zi)));
         let N = z.len();
-        let A = SparseMatrixMul::random(field, rowlen, N, 3, "A");
-        let B = SparseMatrixMul::random(field, rowlen, N, 3, "B");
+        let A = SparseMatrixMul::random(field, &mut rng, rowlen, N, 3, "A");
+        let B = SparseMatrixMul::random(field, &mut rng, rowlen, N, 3, "B");
         let zA = A.mul(&z);
         let zB = B.mul(&z);
         let zC: Vec<_> = zA.iter().zip(zB.iter()).map(|(zAi, zBi)|

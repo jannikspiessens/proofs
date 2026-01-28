@@ -1,20 +1,21 @@
 use std::alloc::Global;
 use std::cell::RefCell;
+use std::marker::PhantomData;
 use itertools::{izip, Itertools};
 
 use tracing::instrument;
 use feanor_math::homomorphism::Homomorphism;
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
-use feanor_math::ring::{RingExtension, RingStore, RingBase, El};
+use feanor_math::ring::{RingStore, RingBase, El};
 use feanor_math::field::{Field, FieldStore};
 use feanor_math::rings::finite::FiniteRing;
 use feanor_math::rings::multivariate::{
-    MultivariatePolyRing,
     MultivariatePolyRingStore,
     multivariate_impl::MultivariatePolyRingImpl
 };
 
-use crate::util::{CoeffRing, Coeff, FiatShamirSim};
+use crate::FSRng;
+use crate::util::{Coeff, FiatShamirSim};
 use crate::codes::{
     LinearCode,
     foldablecodes::{FoldableCode, RSFoldableCode}
@@ -28,42 +29,7 @@ use crate::multilinear::{
         sumcheck_sum, PolyEvals
     }
 };
-
-
-pub trait Proof {}
-
-pub trait Commitment {}
-
-pub trait MultilinearPCS<'a> {
-
-    type Poly: RingStore<Type: MultivariatePolyRing>;
-    type C: Commitment;
-    type P: Proof;
-
-    fn polyring(&self) -> &Self::Poly;
-
-    fn coeffring<'b>(&'b self) -> &'b CoeffRing<Self::Poly>
-        where 'a: 'b
-    {
-        self.polyring().get_ring().base_ring()
-    }
-
-    fn get_challenge(&self) -> Coeff<Self::Poly>;
-
-    fn commit(&self, poly: &[Coeff<Self::Poly>]) -> Self::C;
-    
-    fn open(&self, com: &Self::C, poly: &[Coeff<Self::Poly>]) -> bool;
-
-    fn eval_slow(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
-        y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P;
-
-    fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
-        y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool;
-
-    fn eval(&'a self, com: &Self::C, z: Vec<Coeff<Self::Poly>>,
-        y: Coeff<Self::Poly>, polycoeff: Option<&'a[Coeff<Self::Poly>]>,
-        polyeval: Option<&'a[Coeff<Self::Poly>]>) -> Self::P;
-}
+use crate::commit::{MultilinearPCS, Proof, Commitment};
 
 
 pub struct BaseFoldCommitment<R: RingStore>{
@@ -97,10 +63,11 @@ type SCF<T> = <<T as Sumcheck<2, 1>>::SCB as SumcheckBase<2>>::F;
 pub struct BaseFoldPCS<'a, C, SC>
     where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>
 {
-    fs: RefCell<FiatShamirSim<'a, SCF<SC>>>,
+    fs: RefCell<FiatShamirSim<FSRng>>,
     polyring: MultivariatePolyRingImpl<SCF<SC>>,
     code: C,
     ver_rep: usize,
+    phantom: PhantomData<&'a ()>
 }
 
 impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
@@ -153,13 +120,14 @@ impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
         // let polyring = MultivariatePolyRingImpl::new_with(field.clone(),
         //     varcount, 2*varcount as u16, (0, 0), Global);
 
-        let fs = RefCell::new(FiatShamirSim::new(field));
+        let fs = RefCell::new(FiatShamirSim::<FSRng>::new());
         
         Self {
             fs,
             polyring, 
             code,
-            ver_rep
+            ver_rep,
+            phantom: PhantomData::default()
         }
     }
 
@@ -178,7 +146,7 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
     }
 
     fn get_challenge(&self) -> Coeff<Self::Poly> {
-        self.fs.borrow_mut().challenge()
+        self.fs.borrow_mut().challenge(self.coeffring())
     }
 
     fn commit(&self, poly: &[Coeff<Self::Poly>]) -> Self::C

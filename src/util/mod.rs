@@ -1,5 +1,6 @@
-use rand::RngCore;
-use rand_seeder::{Seeder, SipRng};
+use std::ops::{RangeBounds, Range, Bound};
+use std::ops::Bound::{Included, Excluded};
+use rand::{CryptoRng, Rng, SeedableRng, rngs::{ThreadRng, StdRng}};
 
 use feanor_math::ring::{El, RingStore, RingExtension};
 use feanor_math::rings::finite::{FiniteRingStore, FiniteRing};
@@ -8,8 +9,18 @@ pub type CoeffRing<P> = <<P as RingStore>::Type as RingExtension>::BaseRing;
 pub type Coeff<P> = El<CoeffRing<P>>;
 
 
+pub mod matmul;
+
+
 pub fn gen_vector<EL>(mut f: impl FnMut() -> EL, len: usize) -> Vec<EL> {
     (0..len).map(|_| f()).collect()
+}
+
+// TODO: use this where possible
+pub fn gen_random<R, RNG>(ring: &R, mut rng: RNG, len: usize) -> Vec<El<R>>
+    where R: RingStore<Type: FiniteRing>, RNG: Rng
+{
+    gen_vector::<El<R>>(|| ring.random_element(|| rng.next_u64()), len)
 }
 
 
@@ -47,64 +58,73 @@ pub fn int_from_bits<I>(bits: I) -> usize
 }
 
 
-pub struct FiatShamirSim<'a, R> {
-    ring: &'a R,
-    rng: SipRng
+pub struct FiatShamirSim<RNG: Rng + CryptoRng> {
+    rng: RNG
 }
 
-impl<'a, R: RingStore<Type: FiniteRing>> FiatShamirSim<'a, R> {
-
-    fn get_rng() -> SipRng {
-        Seeder::from("FiatShamirSim").into_rng()
-    }
-
-    pub fn new(ring: &'a R) -> Self {
-        Self {
-            ring,
-            rng: Self::get_rng()
+impl<RNG: Rng + CryptoRng> FiatShamirSim<RNG> {
+    pub fn challenge<R: RingStore<Type: FiniteRing>>(&mut self, ring: &R) -> El<R> {
+        let mut el = ring.random_element(|| self.rng.next_u64());
+        while ring.is_zero(&el) {
+            el = ring.random_element(|| self.rng.next_u64());
         }
-    }
-
-    pub fn challenge(&mut self) -> El<R> {
-        let mut el = self.ring.random_element(|| self.rng.next_u64());
-        while self.ring.is_zero(&el) {
-            el = self.ring.random_element(|| self.rng.next_u64());
-        }
-        // println!("FiatShamirSim new chall: {}", self.ring.format(&el));
         el
     }
 
-    pub fn reset(&mut self) {
-        self.rng = Self::get_rng()
-    }
-
+    pub fn get_rng(&mut self) -> &mut RNG { &mut self.rng }
 }
 
-// TODO: why is this not possible with derive?
-impl<'a, R: RingStore> Clone for FiatShamirSim<'a, R> {
+impl FiatShamirSim<StdRng> {
+    fn new_rng() -> StdRng {
+        StdRng::seed_from_u64(69)
+    }
+    pub fn new() -> Self {
+        Self { rng: Self::new_rng() }
+    }
+    pub fn reset(&mut self) {
+        self.rng = Self::new_rng()
+    }
+}
+
+impl FiatShamirSim<ThreadRng> {
+    fn new_rng() -> ThreadRng {
+        rand::rng()
+    }
+    pub fn new() -> Self {
+        Self { rng: Self::new_rng() }
+    }
+    pub fn reset(&mut self) {
+        self.rng = Self::new_rng()
+    }
+}
+
+// TODO: is this not possible with derive?
+impl<RNG: Rng + CryptoRng + Clone> Clone for FiatShamirSim<RNG> {
     fn clone(&self) -> Self {
         Self {
-            ring: self.ring,
             rng: self.rng.clone()
         }
     } 
 }
 
 
-pub fn gen_random<R>(ring: &R, len: usize, seed: Option<&str>) -> Vec<El<R>>
-    where R: RingStore<Type: FiniteRing>
-{
-    if let Some(seed) = seed {
-        let mut rng: SipRng = Seeder::from(seed).into_rng();
-        gen_vector::<El<R>>(|| ring.random_element(|| rng.next_u64()), len)
-    } else {
-        gen_vector::<El<R>>(|| ring.random_element(rand::random::<u64>), len)
-    }
-}
-
 pub fn test_rot<R: RingStore>(ring: &R, inp: &Vec<El<R>>, out: &Vec<El<R>>, by: usize) {
     assert!(inp.len() == out.len());
     assert!((0..inp.len()).all(|i| ring.eq_el(&inp[i], &out[(i+by)%out.len()])))
+}
+
+
+pub fn contains_range<A>(this: Range<usize>, other: &A) -> bool
+    where A: RangeBounds<usize>
+{
+    let bound_in_range = |range: &Range<usize>, b: Bound<&usize>| -> bool {
+        match b {
+            Included(v) => range.contains(&v),
+            Excluded(v) => range.contains(&(v-1)),
+            _ => false
+        }
+    };
+    bound_in_range(&this, other.start_bound()) && bound_in_range(&this, other.end_bound())
 }
 
 
@@ -135,15 +155,15 @@ mod tests {
         let N = 10;
         let field = Zn::new(65537).as_field().ok().unwrap();
 
-        let mut fs1 = FiatShamirSim::new(&field);
-        let mut fs2 = FiatShamirSim::new(&field);
+        let mut fs1 = FiatShamirSim::<StdRng>::new();
+        let mut fs2 = FiatShamirSim::<StdRng>::new();
 
-        (0..N).all(|_| field.eq_el(&fs1.challenge(), &fs2.challenge()));
+        (0..N).all(|_| field.eq_el(&fs1.challenge(&field), &fs2.challenge(&field)));
 
-        (0..N).for_each(|_| {fs1.challenge();});
+        (0..N).for_each(|_| {fs1.challenge(&field);});
 
         let mut fs3 = fs1.clone();
 
-        (0..N).all(|_| field.eq_el(&fs1.challenge(), &fs3.challenge()));
+        (0..N).all(|_| field.eq_el(&fs1.challenge(&field), &fs3.challenge(&field)));
     }
 }

@@ -1,5 +1,6 @@
 use itertools::{izip, Itertools};
 use std::cell::{RefMut, RefCell};
+use rand::Rng;
 
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
 use feanor_math::field::Field;
@@ -8,10 +9,12 @@ use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
 use crate::{
     codes::foldablecodes::RSFoldableCode,
-    basefold::{
+    commit::{
         MultilinearPCS,
-        BaseFoldPCS,
-        BaseFoldSumcheck
+        basefold::{
+            BaseFoldPCS,
+            BaseFoldSumcheck
+        },
     },
     r1cs::R1CS,
     util::{gen_vector, Coeff, CoeffRing},
@@ -120,23 +123,19 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanPIOP<'a, PCS>
     // }
 }
 
-use rand::RngCore;
-use rand_seeder::{Seeder, SipRng};
-
 impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
     where F: RingStore + Clone, F::Type: Field + FiniteRing,
           BSC: BaseFoldSumcheck<'a>, <BSC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
 {
-    pub fn random(field: &'a F, vc: usize, vcrows: usize, ver_rep: usize) -> Self {
-        let mut rng: SipRng = Seeder::from("SpartanPIOP").into_rng();
+    pub fn random<RNG: Rng>(field: &'a F, mut rng: RNG,
+        vc: usize, vcrows: usize, ver_rep: usize) -> Self
+    {
         let mut z = gen_vector::<El<F>>(||
-            // field.random_element(rand::random::<u64>), 1 << vc);
             field.random_element(|| rng.next_u64()), 1 << vc);
         while z.iter().all(|zi| field.is_zero(zi)) {
-            // z = gen_vector::<El<F>>(|| field.random_element(rand::random::<u64>), 1 << vc);
             z = gen_vector::<El<F>>(|| field.random_element(|| rng.next_u64()), 1 << vc);
         }
-        let (r1cs, zA, zB, zC) = R1CS::random_from(field, &z, 1 << vcrows);
+        let (r1cs, zA, zB, zC) = R1CS::random_from(field, rng, &z, 1 << vcrows);
         SpartanPIOP::new_extra(field, z, r1cs, zA, zB, zC, ver_rep)
     }
 }
@@ -419,7 +418,7 @@ mod tests {
     use super::*;
     use feanor_math::rings::zn::ZnRingStore;
     use feanor_math::rings::zn::zn_64::Zn;
-    use crate::basefold::{BaseFoldSumcheckBasic, BaseFoldSumcheckDoubleEfficient};
+    use crate::commit::basefold::{BaseFoldSumcheckBasic, BaseFoldSumcheckDoubleEfficient};
 
     const VREP: usize = 100;
 
@@ -427,12 +426,13 @@ mod tests {
     fn test_spartan() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
 
         let N = 14;
         
         let spartan: SpartanPIOP::<'_, BaseFoldPCS<'_, RSFoldableCode<_>,
             BaseFoldSumcheckDoubleEfficient<_>>>
-                = SpartanPIOP::random(&field, N, N+1, VREP);
+                = SpartanPIOP::random(&field, &mut rng, N, N+1, VREP);
 
         assert!(spartan.execute());
     }
