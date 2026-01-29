@@ -80,7 +80,7 @@ impl<'a, R: RingStore> SparseMatrixMul<'a, R>
 
 // TODO: implement data structure differently so that its size does not depend on dimensions
 impl<'a, R> SparseMatrixMul<'a, R>
-    where R: FiniteRingStore<Type: FiniteRing>
+    where R: RingStore<Type: FiniteRing>
 {
     pub fn random<RNG: Rng>(ring: &'a R, mut rng: RNG,
         rows: usize, columns: usize, rowhw: usize, desc: &str) -> Self
@@ -103,7 +103,11 @@ impl<'a, R> SparseMatrixMul<'a, R>
             desc: desc.to_string()
         }
     }
+}
 
+impl<'a, R> SparseMatrixMul<'a, R>
+    where R: RingStore
+{
     pub fn from<MM: MatrixMul<R = R>>(mm: &'a MM) -> Self {
 
         let data = (0..mm.rows()).map(|i| (0..mm.columns()).map(|j|

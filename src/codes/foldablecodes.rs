@@ -76,7 +76,7 @@ pub trait FoldableCode {
 
 pub struct RSFoldableCode<'a, R: RingStore<Type: LinSolveRing>> {
     G0code: RScode<'a, R>,
-    d: usize,
+    d: Option<usize>,
     t: Vec<Vec<El<R>>>
 }
 
@@ -84,10 +84,22 @@ impl<'a, R> RSFoldableCode<'a, R>
     where R: RingStore<Type: LinSolveRing + FiniteRing>
 {
     #[instrument(skip_all)]
-    pub fn new(ring: &'a R, k0: usize, c: usize, d: usize) -> Self {
+    pub fn new(ring: &'a R, k0: usize, c: usize, d: Option<usize>) -> Self {
 
         let G0code = RScode::new(ring, k0, k0*c);
 
+        let t = if let Some(d) = d {
+            Self::construct_t(d, &G0code)
+        } else { Vec::new() };
+
+        Self {
+            G0code,
+            d,
+            t
+        }
+    }
+
+    pub fn construct_t(d: usize, G0code: &RScode<'a, R>) -> Vec<Vec<El<R>>> {
         let mut t: Vec<Vec<El<R>>> = Vec::with_capacity(d);
         (0..d).for_each(|dind| t.push(gen_vector::<El<R>>(|| {
                 let mut el = G0code.ring().random_element(rand::random::<u64>);
@@ -97,12 +109,7 @@ impl<'a, R> RSFoldableCode<'a, R>
                 el
             }, G0code.generator().rows()*(1 << dind))
         ));
-
-        Self {
-            G0code,
-            d,
-            t
-        }
+        t
     }
 }
 
@@ -118,7 +125,7 @@ impl<'a, R> RSFoldableCode<'a, R>
 
         Self {
             G0code,
-            d,
+            d: Some(d),
             t
         }
     }
@@ -134,7 +141,7 @@ impl<'a, Rg: RingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, 
     }
 
     fn d(&self) -> usize {
-        self.d
+        self.d.unwrap()
     }
 
     fn k0(&self) -> usize {
@@ -173,7 +180,7 @@ mod tests {
         let k0 = 5;
         let c = 2;
         let d = 1; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
 
         let mut input = gen_vector::<El<Field>>(||
             field.random_element(rand::random::<u64>), mfc.k(0));
@@ -204,7 +211,7 @@ mod tests {
         let k0 = 5;
         let c = 2;
         let d = 2; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
         let t = mfc.t(d-1).collect::<Vec<_>>();
 
         let mut inp1 = gen_vector::<El<Field>>(||
@@ -234,7 +241,7 @@ mod tests {
         let k0 = 5;
         let c = 2;
         let d = 2; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
 
         let inp = gen_vector::<El<Field>>(||
             field.random_element(rand::random::<u64>), mfc.k(d));

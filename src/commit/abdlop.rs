@@ -36,22 +36,23 @@ impl<R: RingStore> DerefMut for ABDLOPcommitment<R> {
 }
 
 
-pub struct ABDLOPmessage<R>
+pub struct ABDLOPmessage<'a, R>
     where R: RingStore
 {
-    s1: Option<Vec<El<R>>>,
-    m: Option<Vec<El<R>>>
+    s1: Option<&'a Vec<El<R>>>,
+    m: Option<&'a Vec<El<R>>>
 }
 
-impl<R: RingStore> ABDLOPmessage<R> {
-    pub fn new(s1: Option<Vec<El<R>>>, m: Option<Vec<El<R>>>) -> Self {
+impl<'a, R: RingStore> ABDLOPmessage<'a, R> {
+    pub fn new(s1: &'a Option<Vec<El<R>>>, m: &'a Option<Vec<El<R>>>) -> Self {
         assert!(s1.is_some() || m.is_some());
-        Self { s1, m }
+        Self { s1: s1.as_ref(), m: m.as_ref() }
     }
 
-    pub fn s1(&self) -> Option<&Vec<El<R>>> {
-        self.s1.as_ref()
-    }
+    // TODO: use ABDLOPparts here?
+    pub fn s1(&self) -> Option<&'a Vec<El<R>>> { self.s1 }
+
+    pub fn m(&self) -> Option<&'a Vec<El<R>>> { self.m }
 }
 
 
@@ -135,7 +136,7 @@ impl<'a, R> ABDLOP<'a, R>
     // TODO: this is not general
     where R: RingStore<Type: FiniteRing + CanHomFrom<BigIntRingBase> + ZnRing>
 {
-    fn commit_ajtai(&'a self, s1opt: &'a Option<Vec<El<R>>>, s2: &'a [El<R>])
+    fn commit_ajtai(&'a self, s1opt: Option<&'a Vec<El<R>>>, s2: &'a [El<R>])
         -> Box<dyn Iterator<Item = El<R>> + 'a>
     {
         let s2iter = self.A2.mulit(s2);
@@ -162,7 +163,7 @@ impl<'a, R> ABDLOP<'a, R>
         let mut t = Vec::with_capacity(self.comlen());
         let mut rngmut = self.rng.borrow_mut();
         let s2 = gen_vector_infbnd(self.ring, &mut rngmut, &self.bnd2, self.A2.columns());
-        t.extend(self.commit_ajtai(&mes.s1, &s2));
+        t.extend(self.commit_ajtai(mes.s1(), &s2));
         if let Some(m) = &mes.m {
             t.extend(self.commit_bdlop(m, &s2, None));
         }
@@ -184,7 +185,7 @@ impl<'a, R> ABDLOP<'a, R>
             intring.is_leq(&self.ring.smallest_lift(self.ring.clone_el(&el)), &bnd2));
         if !(c1 && c2 && com.len() == self.comlen()) { return false };
 
-        let mut iter: Box<dyn Iterator<Item = El<R>>> = self.commit_ajtai(&mes.s1, op);
+        let mut iter: Box<dyn Iterator<Item = El<R>>> = self.commit_ajtai(mes.s1(), op);
         if let Some(m) = &mes.m {
             iter = Box::new(iter.chain(self.commit_bdlop(m, op, None)));
         }
@@ -230,15 +231,19 @@ mod tests {
         let s1 = Some(gen_vector_infbnd(&field, &mut rng, &bnd1_, m2));
         let bnd1 = Some(bnd1_);
         
-        let mut mes = ABDLOPmessage::new(s1, Some(gen_random(&field, &mut rng, l-100)));
+        let mut m = Some(gen_random(&field, &mut rng, l-100));
         let mext = gen_random(&field, &mut rng, 100);
 
         let abdlop = ABDLOP::random(&field, rng, n, Some(l), m1, m2, bnd1, bnd2);
-        let (mut com, op) = abdlop.commit(&mes);
+        let (mut com, op) = {
+            let mes = ABDLOPmessage::new(&s1, &m);
+            abdlop.commit(&mes)
+        };
 
         abdlop.append_commit(&mut com, &mext, &op);
-        mes.m.as_mut().map(|m| m.extend(mext));
 
+        m.as_mut().map(|x| x.extend(mext));
+        let mes = ABDLOPmessage::new(&s1, &m);
         assert!(abdlop.open(&com, &mes, &op));
     }
 }

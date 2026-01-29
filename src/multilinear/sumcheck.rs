@@ -65,11 +65,11 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
         }
     }
 
-    fn get_points(&self) -> impl Iterator<Item = &i32> {
+    pub fn get_points(&self) -> impl Iterator<Item = &i32> {
         [0, 1].iter().chain(self.points.iter())
     }
 
-    fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
+    pub fn get_evals(&self) -> impl Iterator<Item = &El<F>> {
         self.eval01.iter().chain(self.evals.iter())
     }
 
@@ -247,8 +247,8 @@ pub trait Sumcheck<const D: usize, const N: usize>
         let mut tmpsum = sum;
         ((0..self.get_base().varcount()).all(|_| {
             // println!("================== Round {i}");
-            let hdi = self.compute_round(&challvec, None);
-            // let hdi = self.compute_round(&challvec, Some(field.clone_el(&tmpsum)));
+            // let hdi = self.compute_round(&challvec, None);
+            let hdi = self.compute_round(&challvec, Some(field.clone_el(&tmpsum)));
             // {
             //     let ws = self.get_workspace();
             //     ws.iter().enumerate().for_each(|(i, v)| {

@@ -15,7 +15,7 @@ pub struct R1CSMatrix<'a, R: RingStore> {
     mm: SparseMatrixMul<'a, R>
 }
 
-impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
+impl<'a, R: RingStore> R1CSMatrix<'a, R>
 {
     pub fn new(mm: SparseMatrixMul<'a, R>) -> Self {
         assert!(mm.rows().is_power_of_two());
@@ -25,7 +25,10 @@ impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
              mm
         }
     }
+}
 
+impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
+{
     // this is O(NlogN) since we compute each evaluation of eq from scratch
     // next algorithm is O(N) by using the streaming algorithm to compute the eq evaluations
     pub fn evaluate_rowvars_slow(&self, at: &[El<R>]) -> Vec<Vec<El<R>>> {
@@ -78,7 +81,7 @@ pub struct R1CS<'a, R: RingStore> {
     pub C: R1CSMatrix<'a, R>
 }
 
-impl<'a, R: RingStore<Type: Field>> R1CS<'a, R>
+impl<'a, R: RingStore> R1CS<'a, R>
 {
     pub fn new(A: SparseMatrixMul<'a, R>, B: SparseMatrixMul<'a, R>,
         C: SparseMatrixMul<'a, R>) -> Self {

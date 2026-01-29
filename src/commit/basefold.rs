@@ -58,22 +58,22 @@ impl<R: RingStore<Type: Field>> Proof for BaseFoldProof<R>{}
 
 
 // type alias
-type SCF<T> = <<T as Sumcheck<2, 1>>::SCB as SumcheckBase<2>>::F;
+pub type BSCF<T> = <<T as Sumcheck<2, 1>>::SCB as SumcheckBase<2>>::F;
 
 pub struct BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<SC>>
 {
     fs: RefCell<FiatShamirSim<FSRng>>,
-    polyring: MultivariatePolyRingImpl<SCF<SC>>,
+    polyring: MultivariatePolyRingImpl<BSCF<SC>>,
     code: C,
-    ver_rep: usize,
+    ver_rep: Option<usize>,
     phantom: PhantomData<&'a ()>
 }
 
 impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<SC>>
 {
-    pub fn field(&self) -> &SCF<SC> {
+    pub fn field(&self) -> &BSCF<SC> {
         self.code.ring()
     }
 
@@ -83,7 +83,7 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
 
     pub fn proofsize(&self) -> usize {
         let d = self.code.d();
-        let proofsize = d*2*self.ver_rep + 3*d +
+        let proofsize = d*2*self.ver_rep.unwrap() + 3*d +
             if self.code.k(0) == 0 { 0 } else { self.code.k(0).ilog2() as usize };
         let ZZbig: BigIntRing = BigIntRing::RING;
         let bits = ZZbig.abs_log2_ceil(&self.field().characteristic(ZZbig).unwrap()).unwrap();
@@ -93,8 +93,8 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
 }
 
 impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>,
-          <SCF<SC> as RingStore>::Type: FiniteRing
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<SC>>,
+          <BSCF<SC> as RingStore>::Type: FiniteRing
 {
     pub fn reset_fs(&self) {
         self.fs.borrow_mut().reset()
@@ -107,12 +107,14 @@ impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
           <SC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
 {
     #[instrument(skip_all)]
-    pub fn new(field: &'a F, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
+    pub fn new(field: &'a F, varcount: usize, k0: usize, c: usize, ver_rep: Option<usize>) -> Self
     {
         assert!(k0.is_power_of_two());
 
-        let code = RSFoldableCode::new(field, k0, c,
-            varcount - (k0.ilog2() as usize));
+        let d = if ver_rep.is_some() {
+            Some(varcount - (k0.ilog2() as usize))
+        } else { None };
+        let code = RSFoldableCode::new(field, k0, c, d);
         
         // NOTE: fake polyring to efficiently test large instances
         let polyring = MultivariatePolyRingImpl::new_with(field.clone(),
@@ -134,12 +136,12 @@ impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
 }
 
 impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
-    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = SCF<SC>>,
-          SCF<SC>: Clone, <SCF<SC> as RingStore>::Type: FiniteRing, 'b: 'a
+    where SC: BaseFoldSumcheck<'a>, C: FoldableCode<R = BSCF<SC>>,
+          BSCF<SC>: Clone, <BSCF<SC> as RingStore>::Type: FiniteRing, 'b: 'a
 {
-    type Poly = MultivariatePolyRingImpl<SCF<SC>>;
-    type C = BaseFoldCommitment<SCF<SC>>;
-    type P = BaseFoldProof<SCF<SC>>;
+    type Poly = MultivariatePolyRingImpl<BSCF<SC>>;
+    type C = BaseFoldCommitment<BSCF<SC>>;
+    type P = BaseFoldProof<BSCF<SC>>;
 
     fn polyring(&self) -> &Self::Poly {
         &self.polyring
@@ -170,7 +172,7 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
 
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<PolyEvals<SCF<SC>,1>> = Vec::with_capacity(d);
+        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
         let eq = MultilinearBasis::new(f, &z).polynomial(&self.polyring);
         let mut wpoly = self.polyring.clone_el(poly);
         let mut scpoly = self.polyring.mul_ref_fst(poly, eq);
@@ -182,10 +184,10 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
         ), &y);*/
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<SCF<SC>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<SCF<SC>>> = Vec::with_capacity(
+        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
         
         for dind in (0..d).rev() {
@@ -249,7 +251,7 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
         let mut tmp = y;
 
         let mut topcode = &com.code_el;
-        let mut mu = (0..self.ver_rep).map(|_|
+        let mut mu = (0..self.ver_rep.unwrap()).map(|_|
             rand::random_range(0..self.code.n(d-1))).collect_vec();
 
         self.open(com, &poly) &&
@@ -258,7 +260,7 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
 
             let dind = d - 1 - i;
             let t = self.code.t(dind).collect_vec();
-            let mut rescode = (0..self.ver_rep).all(|j| {
+            let mut rescode = (0..self.ver_rep.unwrap()).all(|j| {
                 let interp = interpdeg1(self.coeffring(), t[mu[j]],
                     &topcode[mu[j]], &topcode[mu[j] + self.code.n(dind)], &chall);
                 self.coeffring().eq_el(&interp, &code[mu[j]])
@@ -323,20 +325,20 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
         
         let fsclone = self.fs.borrow().clone();
 
-        let mut polys: Vec<PolyEvals<SCF<SC>,1>> = Vec::with_capacity(d);
+        let mut polys: Vec<PolyEvals<BSCF<SC>,1>> = Vec::with_capacity(d);
 
         let bsc = SC::new(f, polyeval.unwrap(), z);
         let mut hunivar = bsc.compute_round_bsc(&[], Some(f.clone_el(&y)));
         // let mut hunivar = bsc.compute_round_bsc(&[], None);
         polys.push(hunivar);
 
-        let mut proofcodes: Vec<Vec<El<SCF<SC>>>> = Vec::with_capacity(d);
+        let mut proofcodes: Vec<Vec<El<BSCF<SC>>>> = Vec::with_capacity(d);
         let mut topcode = &com.code_el;
 
-        let mut last: Vec<El<SCF<SC>>> = Vec::with_capacity(
+        let mut last: Vec<El<BSCF<SC>>> = Vec::with_capacity(
             if self.code.k(0) == 1 {0} else {self.code.k(0)});
 
-        let mut challvec: Vec<El<SCF<SC>>> = Vec::with_capacity(d - 1);
+        let mut challvec: Vec<El<BSCF<SC>>> = Vec::with_capacity(d - 1);
         
         for dind in (0..d).rev() {
             let chall = self.get_challenge();
@@ -380,10 +382,10 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
 
 pub trait BaseFoldSumcheck<'a>: Sumcheck<2, 1>
 {
-    fn new(field: &'a SCF<Self>, evalsref: &'a [El<SCF<Self>>], z: Vec<El<SCF<Self>>>) -> Self;
+    fn new(field: &'a BSCF<Self>, evalsref: &'a [El<BSCF<Self>>], z: Vec<El<BSCF<Self>>>) -> Self;
 
-    fn compute_round_bsc(&self, challs: &[El<SCF<Self>>], sum: Option<El<SCF<Self>>>)
-        -> PolyEvals<SCF<Self>,1>;
+    fn compute_round_bsc(&self, challs: &[El<BSCF<Self>>], sum: Option<El<BSCF<Self>>>)
+        -> PolyEvals<BSCF<Self>,1>;
 }
 
 
@@ -654,7 +656,7 @@ mod tests {
     use crate::multilinear::{from_hypercube_coeffs, sum_over_hypercube,
         evaluate_at_fromcoeff, coeffs_to_evals_inplace};
 
-    const VREP: usize = 100;
+    const VREP: Option<usize> = Some(100);
     type FieldImpl = AsField<Zn>;
 
     #[test]

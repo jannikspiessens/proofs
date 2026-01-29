@@ -29,15 +29,14 @@ pub struct SpartanPIOP<'a, PCS: MultilinearPCS<'a>>
 {
     vc_rows: usize,
     vc_cols: usize,
-    tau: Vec<Coeff<PCS::Poly>>,
     r1cs: R1CS<'a, CoeffRing<PCS::Poly>>,
     z: Vec<Coeff<PCS::Poly>>, // TODO: can also be &'a reference
     zA: Vec<Coeff<PCS::Poly>>,
     zB: Vec<Coeff<PCS::Poly>>,
     zC: Vec<Coeff<PCS::Poly>>,
     pcs: PCS,
-    zcoeff: Vec<Coeff<PCS::Poly>>,
-    com: PCS::C
+    zcoeff: Option<Vec<Coeff<PCS::Poly>>>,
+    com: Option<PCS::C>
 }
 
 impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
@@ -45,14 +44,10 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
           BSC: BaseFoldSumcheck<'a>, <BSC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
 {
     pub fn new_extra(field: &'a F, z: Vec<El<F>>, r1cs: R1CS<'a, F>,
-        zA: Vec<El<F>>, zB: Vec<El<F>>, zC: Vec<El<F>>, ver_rep: usize) -> Self
+        zA: Vec<El<F>>, zB: Vec<El<F>>, zC: Vec<El<F>>, ver_rep: Option<usize>) -> Self
     {
         assert!(z.len().is_power_of_two());
         let vc_cols = z.len().ilog2() as usize;
-
-        // TODO: avoid clone here?
-        let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
-        evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
 
         // TODO: set reasonable parameters here
         let k0 = 1;
@@ -60,17 +55,22 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
 
         let pcs = BaseFoldPCS::<'a, RSFoldableCode<'a, F>, BSC>
             ::new(field, vc_cols, k0, c, ver_rep);
-        let com = pcs.commit(&zcoeff);
+
+        // if none then we do not intend on actually computing the pcs at the end
+        let (zcoeff, com) = if ver_rep.is_some() {
+            // TODO: avoid clone here?
+            let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
+            evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
+            let com = pcs.commit(&zcoeff);
+            (Some(zcoeff), Some(com))
+        } else {(None, None)};
 
         let vc_rows = r1cs.A.rowlogsize();
-
-        let tau = (0..vc_rows).map(|_| pcs.get_challenge()).collect();
 
         Self {
             pcs,
             vc_rows,
             vc_cols,
-            tau,
             r1cs,
             z, zA, zB, zC,
             zcoeff,
@@ -83,14 +83,15 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
         let zA = r1cs.A.mul(&z);
         let zB = r1cs.B.mul(&z);
         let zC = r1cs.C.mul(&z);
-        SpartanPIOP::new_extra(ring, z, r1cs, zA, zB, zC, ver_rep)
+        SpartanPIOP::new_extra(ring, z, r1cs, zA, zB, zC, Some(ver_rep))
     }
 
     pub fn proofsize(&'a self) -> usize {
         let rowchecksize = 4*self.vc_rows;
         let linchecksize = 3*self.vc_cols;
         let ZZbig: BigIntRing = BigIntRing::RING;
-        let bits = ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
+        let bits =
+            ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
         println!("{}", self.pcs.proofsize() >> (3 + 10));
         return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)
     }
@@ -110,17 +111,17 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanPIOP<'a, PCS>
         self.vc_cols
     }
 
-    pub fn tau(&self) -> &Vec<Coeff<PCS::Poly>> {
-        &self.tau
-    }
+    // pub fn tau(&self) -> &Vec<Coeff<PCS::Poly>> {
+    //     &self.tau
+    // }
 
     pub fn challenge(&mut self) -> Coeff<PCS::Poly> {
         self.pcs.get_challenge()
     }
 
-    // pub fn get_zM(&self) -> [&RefCell<Vec<Coeff<PCS::Poly>>>; 4] {
-    //     [&self.z, &self.zA, &self.zB, &self.zC]
-    // }
+    pub fn get_zM(&self) -> [&Vec<Coeff<PCS::Poly>>; 4] {
+        [&self.z, &self.zA, &self.zB, &self.zC]
+    }
 }
 
 impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
@@ -136,7 +137,7 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
             z = gen_vector::<El<F>>(|| field.random_element(|| rng.next_u64()), 1 << vc);
         }
         let (r1cs, zA, zB, zC) = R1CS::random_from(field, rng, &z, 1 << vcrows);
-        SpartanPIOP::new_extra(field, z, r1cs, zA, zB, zC, ver_rep)
+        SpartanPIOP::new_extra(field, z, r1cs, zA, zB, zC, Some(ver_rep))
     }
 }
 
@@ -156,12 +157,15 @@ impl<'a, PCS> SpartanPIOP<'a, PCS>
 
 pub struct SpartanRowcheckBase<'a, PCS: MultilinearPCS<'a>> {
     piop: &'a SpartanPIOP<'a, PCS>,
+    tau: Vec<Coeff<PCS::Poly>>
 }
 
 impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheckBase<'a, PCS>
 {
     pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>) -> Self {
-        Self { piop }
+
+        let tau = (0..piop.vc_rows).map(|_| piop.pcs.get_challenge()).collect();
+        Self { piop, tau }
     }
 }
 
@@ -194,11 +198,11 @@ impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
         let vc = self.varcount();
         let i = challs.len();
         let zero = field.zero();
-        let tmp = MultilinearBasis::new(field, &self.piop.tau[(vc - i)..]).evaluate(challs);
-        let taudmini = if i < vc { &self.piop.tau[vc - i - 1] } else { &zero };
+        let tmp = MultilinearBasis::new(field, &self.tau[(vc - i)..]).evaluate(challs);
+        let taudmini = if i < vc { &self.tau[vc - i - 1] } else { &zero };
         let cz = field.mul_ref_fst(&tmp, field.sub_ref_snd(field.one(), taudmini));
         let co = field.mul_ref_snd(tmp, taudmini);
-        let eq = MultilinearBasisEvals::new(field, &self.piop.tau[..(vc - i).saturating_sub(1)]);
+        let eq = MultilinearBasisEvals::new(field, &self.tau[..(vc - i).saturating_sub(1)]);
         eq.map(move |eqi| (
             field.mul_ref(&cz, &eqi),
             field.mul_ref_fst(&co, eqi)
@@ -400,16 +404,17 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
             debug_assert!(evalzref.len() == 1);
             ring.clone_el(&evalzref[0])
         };
+        let zcoeff = self.base.piop.zcoeff.as_ref().unwrap();
+        let com = self.base.piop.com.as_ref().unwrap();
         {
-            let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, &self.base.piop.zcoeff);
+            let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, zcoeff);
             debug_assert!(ring.eq_el(&y, &ev[0]));
         }
         let clonedrX = rX.iter().map(|el| ring.clone_el(el)).collect_vec();
-        let proof = self.base.piop.pcs.eval(&self.base.piop.com, rX,
-            ring.clone_el(&y), Some(&self.base.piop.zcoeff), Some(&self.base.piop.z));
+        let proof = self.base.piop.pcs.eval(com, rX,
+            ring.clone_el(&y), Some(zcoeff), Some(&self.base.piop.z));
         let clonedy = ring.clone_el(&y);
-        self.base.piop.pcs.verify(&self.base.piop.com,
-            &clonedrX, clonedy, &self.base.piop.zcoeff, proof)
+        self.base.piop.pcs.verify(com, &clonedrX, clonedy, zcoeff, proof)
     }
 }
 

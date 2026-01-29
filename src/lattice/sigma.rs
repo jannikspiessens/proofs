@@ -85,21 +85,17 @@ pub struct LatSigma<'a, R, MM1, MMm>
 }
 
 impl<'a, R, MM1, MMm> LatSigma<'a, R, MM1, MMm>
-    where R: RingStore<
-        Type: FiniteRing + CanHomFrom<BigIntRingBase> + ZnRing>,
-        MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
+    where R: RingStore, MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
 {
-    pub fn new(cs: ABDLOP<'a, R>,
-        gamma: (Option<f64>, f64), challbnd: El<BigIntRing>, 
-        linrel: Option<LatSigmaLinRel<'a, R, MM1, MMm>>,
-        rsmode: RejSamplModes
-    ) -> Self {
-        assert!(!cs.has_ajtai() || gamma.0.is_some());
-        let fs = RefCell::new(FiatShamirSim::<FSRng>::new());
-        Self { cs, fs, gamma, challbnd, rsmode, linrel }
-    }
+    pub fn ring(&self) -> &R { self.cs.ring() }
 
-    fn ring(&self) -> &R { self.cs.ring() }
+    pub fn abdlop(&self) -> &ABDLOP<'a, R> { &self.cs }
+
+    pub fn get_fs(&self) -> &RefCell<FiatShamirSim<FSRng>> { &self.fs }
+
+    pub fn set_linrel(&mut self, linrel: LatSigmaLinRel<'a, R, MM1, MMm>) {
+        self.linrel = Some(linrel);
+    }
 
     fn get_sigma(&self, part: ABDLOPparts) -> f64 {
         ZZbig.to_float_approx(&self.challbnd) * (match part {
@@ -115,6 +111,21 @@ impl<'a, R, MM1, MMm> LatSigma<'a, R, MM1, MMm>
             ABDLOPparts::Ajtai => self.cs.get_m1().unwrap(),
             ABDLOPparts::BDLOP => self.cs.get_m2()
         } as f64) * 2f64.sqrt()
+    }
+}
+
+impl<'a, R, MM1, MMm> LatSigma<'a, R, MM1, MMm>
+    where R: RingStore<
+        Type: FiniteRing + CanHomFrom<BigIntRingBase> + ZnRing>,
+        MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
+{
+    pub fn new(cs: ABDLOP<'a, R>,
+        gamma: (Option<f64>, f64), challbnd: El<BigIntRing>, 
+        rsmode: RejSamplModes
+    ) -> Self {
+        assert!(!cs.has_ajtai() || gamma.0.is_some());
+        let fs = RefCell::new(FiatShamirSim::<FSRng>::new());
+        Self { cs, fs, gamma, challbnd, rsmode, linrel: None }
     }
 
     pub fn prove(&self, op: &ABDLOPopening<R>, mes: &ABDLOPmessage<R>) -> LatSigmaProof<R>
@@ -231,7 +242,6 @@ mod tests {
     use crate::{
         util::gen_random,
         commit::abdlop::ABDLOPmessage,
-        lattice::gen_vector_infbnd
     };
 
     type FieldImpl = AsField<Zn>;
@@ -258,14 +268,14 @@ mod tests {
         // let s1 = Some(gen_vector_infbnd(&field, &mut rng, &bnd1_, m2));
         // let bnd1 = Some(bnd1_);
         
-        let mes = ABDLOPmessage::new(s1, Some(gen_random(&field, &mut rng, l)));
+        let m = Some(gen_random(&field, &mut rng, l));
+        let mes = ABDLOPmessage::new(&s1, &m);
         
         let abdlop = ABDLOP::random(&field, rng, n, Some(l), m1, m2, bnd1, bnd2);
         let (com, op) = abdlop.commit(&mes);
 
         assert!(abdlop.open(&com, &mes, &op));
 
-        let linrel = None;
         // NOTE: we set gamma here to ensure M\approx 3
         let rsmode = RejSamplModes::Mode1;
         let gamma1 = Some(13f64);
@@ -277,7 +287,7 @@ mod tests {
         let challbnd = ZZbig.power_of_two(128);
 
         let latsigma: LatSigmaDefault<FieldImpl>
-            = LatSigma::new(abdlop, gamma, challbnd, linrel, rsmode);
+            = LatSigma::new(abdlop, gamma, challbnd, rsmode);
 
         let proof = latsigma.prove(&op, &mes);
 
