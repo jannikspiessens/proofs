@@ -91,10 +91,11 @@ impl<'a, F: RingStore<Type: Field>, const M: usize> PolyEvals<F, M>
 
     pub fn interp(&self, field: &F, a: &El<F>) -> El<F> {
         let points = self.get_points().collect_vec();
+        // TODO: this is collecting every iteration of sumcheck
         let lagr = PolyEvals::<F, M>::get_lagrange_polys_at(field, a, &points);
-        self.get_evals().zip(lagr).fold(field.zero(), |acc, (e, l)| {
+        self.get_evals().zip(lagr).fold(field.zero(), |acc, (e, l)|
             field.add(acc, field.mul_ref_fst(e, l))
-        })
+        )
     }
 
     pub fn print(&self, field: &F) {

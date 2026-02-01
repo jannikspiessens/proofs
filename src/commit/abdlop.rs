@@ -192,7 +192,7 @@ impl<'a, R> ABDLOP<'a, R>
         iter.zip(com.iter()).all(|(l, r)| self.ring.eq_el(&l, r))
     }
 
-    pub fn append_commit(&self, com: &mut ABDLOPcommitment<R>, m: &[El<R>], op: &ABDLOPopening<R>)
+    pub fn append_commit(&self, com: &mut ABDLOPcommitment<R>, op: &ABDLOPopening<R>, m: &[El<R>])
     {
         assert!(self.has_bdlop());
         let comlen = com.len();
@@ -205,14 +205,14 @@ impl<'a, R> ABDLOP<'a, R>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use feanor_math::rings::zn::zn_64::Zn;
 
     use crate::util::gen_random;
 
     #[test]
     fn test_abdlop() {
 
-        let field = Zn::new(65537).as_field().ok().unwrap();
+        let field = feanor_math::rings::zn::zn_64::Zn::new(65537).as_field().ok().unwrap();
+
         // let mut rng = rand::rng();
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
         
@@ -240,7 +240,7 @@ mod tests {
             abdlop.commit(&mes)
         };
 
-        abdlop.append_commit(&mut com, &mext, &op);
+        abdlop.append_commit(&mut com, &op, &mext);
 
         m.as_mut().map(|x| x.extend(mext));
         let mes = ABDLOPmessage::new(&s1, &m);

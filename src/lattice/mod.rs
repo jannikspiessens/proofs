@@ -64,6 +64,12 @@ pub fn inner_prod<'a, R, I>(ring: &R, intring: &IntRing<R>, left: I, right: I) -
         intring.mul(ring.smallest_lift(ring.clone_el(li)), ring.smallest_lift(ring.clone_el(ri)))))
 }
 
+pub fn norm2<R>(ring: &R, intring: &IntRing<R>, vec: &[El<R>]) -> f64
+    where R: RingStore<Type: CanHomFrom<BigIntRingBase> + ZnRing>
+{
+    intring.to_float_approx(&inner_prod(ring, intring, vec.iter(), vec.iter())).sqrt()
+}
+
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum RejSamplModes {

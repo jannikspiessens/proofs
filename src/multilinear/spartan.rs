@@ -92,7 +92,6 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
         let ZZbig: BigIntRing = BigIntRing::RING;
         let bits =
             ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
-        println!("{}", self.pcs.proofsize() >> (3 + 10));
         return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)
     }
 }
