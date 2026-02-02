@@ -41,7 +41,7 @@ impl<'a, R, MM1, MMm> LatSigmaLinRel<R, MM1, MMm>
 }
 
 
-pub struct LatSigmaPrecomp<R>
+struct LatSigmaPrecomp<R>
     where R: RingStore
 {
     y1: Option<Vec<El<R>>>,

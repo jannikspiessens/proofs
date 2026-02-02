@@ -166,6 +166,10 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheckBase<'a, PCS>
         let tau = (0..piop.vc_rows).map(|_| piop.pcs.get_challenge()).collect();
         Self { piop, tau }
     }
+
+    pub fn piop(&self) -> &SpartanPIOP<'a, PCS> {
+        &self.piop
+    }
 }
 
 impl<'a, PCS> SumcheckBase<3> for SpartanRowcheckBase<'a, PCS>
@@ -225,6 +229,10 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanRowcheck<'a, PCS>
             zB: RefCell::default(),
             zC: RefCell::default()
         }
+    }
+
+    pub fn base(&self) -> &SpartanRowcheckBase<'a, PCS> {
+        &self.base
     }
 
     // pub fn move_out(self) -> SpartanPIOP<'a, PCS> {
