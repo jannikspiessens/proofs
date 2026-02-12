@@ -244,7 +244,7 @@ impl<'a, R, MM1> LatSigma<'a, R, MM1, SparseMatrixMul<'a, R>>
     pub fn verify(&'a self, com: &ABDLOPcommitment<R>, proof: &LatSigmaProof<R>) -> bool {
         if !(proof.z1.is_some() == self.cs.has_ajtai() && com.len() == self.cs.comlen())
             { return false };
-        
+
         let ring = self.ring();
         let intring = ring.integer_ring();
         if let Some(z1) = proof.z1.as_ref() {
@@ -269,6 +269,7 @@ impl<'a, R, MM1> LatSigma<'a, R, MM1, SparseMatrixMul<'a, R>>
 
         let linrel = self.linrel.borrow();
         if linrel.is_some() {
+
             let challuiter = linrel.u.iter().map(|ui| ring.mul_ref(&chall, ui));
             let lhsiter = if let Some(R1) = linrel.R1.as_ref() {
                 Box::new(challuiter.zip(R1.mulit(proof.z1.as_ref().unwrap())).map(|(challui, R1z1i)|

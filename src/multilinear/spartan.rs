@@ -102,6 +102,10 @@ impl<'a, PCS: MultilinearPCS<'a>> SpartanPIOP<'a, PCS>
         self.pcs.coeffring()
     }
 
+    pub fn r1cs(&self) -> &R1CS<'a, CoeffRing<PCS::Poly>> {
+        &self.r1cs
+    }
+
     pub fn varcount_rows(&self) -> usize {
         self.vc_rows
     }
@@ -292,6 +296,10 @@ impl<'a, PCS:MultilinearPCS<'a>> SpartanLincheckBase<'a, PCS>
     pub fn for_piop(piop: &'a SpartanPIOP<'a, PCS>) -> Self
     {
         Self { piop }
+    }
+
+    pub fn piop(&self) -> &SpartanPIOP<'a, PCS> {
+        &self.piop
     }
 }
 
