@@ -227,6 +227,36 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
     fn scalar_mul(&self, scalar: &El<Self::BaseRing>, inp: El<Self>) -> El<Self> {
         Self::from_array(Self::to_array(inp).map(|el|
             self.NTT_ring().mul(el, self.to_NTTRing(self.base_ring().clone_el(scalar))))) }
+
+    fn to_ntt_ring_ref(&self, inp: &[El<Self::BaseRing>], prefixlen: Option<usize>)
+        -> Vec<El<Self>>
+    {
+        assert!(prefixlen.is_none_or(|x| x < N));
+        let tmp = prefixlen.unwrap_or(0);
+        self.to_ntt_ring(
+            (0..tmp).map(|_| self.base_ring().zero())
+            .chain(inp.iter().map(|el| self.base_ring().clone_el(el)))
+            .chain(((inp.len() + tmp)..(inp.len() + tmp).next_multiple_of(N))
+                .map(|_| self.base_ring().zero()))
+        )
+    }
+
+    fn to_ntt_ring(&self, inp: impl Iterator<Item = El<Self::BaseRing>>) -> Vec<El<Self>>
+    {
+        // assert!(inp.count() % N == 0);
+        inp.map(|el| self.to_NTTRing(el)).collect_vec()
+            .into_chunks::<N>().into_iter().map(|el| Self::from_array(el)).collect_vec()
+    }
+
+    fn to_base_ring_ref(&self, inp: &[El<Self>]) -> Vec<El<Self::BaseRing>>
+    {
+        self.to_base_ring(inp.iter().map(|el| self.clone_el(el)))
+    }
+
+    fn to_base_ring(&self, inp: impl Iterator<Item = El<Self>>) -> Vec<El<Self::BaseRing>>
+    {
+        inp.flat_map(|el| Self::to_array(el)).map(|el| self.to_BaseRing(el)).collect()
+    }
 }
 
 impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRing<R, N>
@@ -276,8 +306,6 @@ impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRingExt<R, N>
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
-
-    // TODO: make ntt methods go back to basering?
 }
 
 
@@ -418,8 +446,6 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 {
     pub fn ring(&self) -> &R { self.ring }
 
-    pub fn base_ring(&self) -> &R::BaseRing { self.ring().base_ring() }
-
     pub fn rng(&self) -> &RefCell<FSRng> { &self.rng }
 
     pub fn has_ajtai(&self) -> bool { self.A1.is_some() }
@@ -442,51 +468,18 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
     pub fn comlen(&self) -> usize { self.A2.rows() + self.get_B().map_or(0, |x| x.rows()) }
 
-    // TODO: make next four functions provided methods for ABDLOPRingTrait?
-    fn to_ntt_ring_ref(&self, inp: &[El<<R as ABDLOPRingTrait<N>>::BaseRing>],
-        prefixlen: Option<usize>) -> Vec<El<R>>
-    {
-        assert!(prefixlen.is_none_or(|x| x < N));
-        let tmp = prefixlen.unwrap_or(0);
-        self.to_ntt_ring(
-            (0..tmp).map(|_| self.base_ring().zero())
-            .chain(inp.iter().map(|el| self.base_ring().clone_el(el)))
-            .chain(((inp.len() + tmp)..(inp.len() + tmp).next_multiple_of(N))
-                .map(|_| self.base_ring().zero()))
-        )
-    }
-
-    pub fn to_ntt_ring(&self, inp: impl Iterator<Item = El<<R as ABDLOPRingTrait<N>>::BaseRing>>)
-        -> Vec<El<R>>
-    {
-        // assert!(inp.count() % N == 0);
-        inp.map(|el| self.ring().to_NTTRing(el)).collect_vec()
-            .into_chunks::<N>().into_iter().map(|el| R::from_array(el)).collect_vec()
-    }
-
-    pub fn to_base_ring_ref(&self, inp: &[El<R>]) -> Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>
-    {
-        self.to_base_ring(inp.iter().map(|el| self.ring().clone_el(el)))
-    }
-
-    pub fn to_base_ring(&self, inp: impl Iterator<Item = El<R>>)
-        -> Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>
-    {
-        inp.flat_map(|el| R::to_array(el)).map(|el| self.ring().to_BaseRing(el)).collect()
-    }
-
     pub fn gen_m(&self, inp: Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>) -> Vec<El<R>> {
         if !(inp.len() % N == 0) {
             panic!("Input to ABDLOP::gen_m must have length divisible by N");
         }
-        self.to_ntt_ring(inp.into_iter())
+        self.ring().to_ntt_ring(inp.into_iter())
     }
 
     pub fn gen_s1(&self, inp: Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>) -> Vec<El<R>> {
         if !(inp.len() % N == 0) {
             panic!("Input to ABDLOP::gen_s1 must have length divisible by N");
         }
-        let mut res = self.to_ntt_ring(inp.into_iter());
+        let mut res = self.ring().to_ntt_ring(inp.into_iter());
         if !self.check_inf_norm::<false>(&res, self.bnd1.as_ref().unwrap()) {
             panic!("Input to ABDLOP::gen_s1 must be bounded by ABDLOP::get_bnd1");
         }
@@ -517,7 +510,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
     fn gen_s2(&self) -> Vec<El<R>> {
         let mut rngmut = self.rng.borrow_mut();
-        let mut s2 = self.to_ntt_ring(gen_vector_infbnd(self.base_ring(),
+        let mut s2 = self.ring().to_ntt_ring(gen_vector_infbnd(self.ring().base_ring(),
             &mut rngmut, &self.bnd2, self.A2.columns()*N).into_iter());
         s2.iter_mut().for_each(|s2el| self.ring().ntt(s2el)); // go to NTT representation
         s2
@@ -543,7 +536,8 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
     }
 
     fn check_inf_norm<const INTT: bool>(&self, inp: &[El<R>], bnd: &El<BigIntRing>) -> bool {
-        let intring = self.base_ring().integer_ring();
+        let basering = self.ring().base_ring();
+        let intring = basering.integer_ring();
         let hom = intring.can_hom(&ZZbig).unwrap();
         let bnd = hom.map_ref(bnd);
        
@@ -551,7 +545,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
             let mut tmp = self.ring().clone_el(el);
             if INTT {self.ring().intt(&mut tmp)};
             R::to_array(tmp).into_iter().all(|ell|
-                intring.is_leq(&self.base_ring().smallest_lift(self.ring().to_BaseRing(ell)), &bnd)
+                intring.is_leq(&basering.smallest_lift(self.ring().to_BaseRing(ell)), &bnd)
             )
         })
     }
@@ -584,7 +578,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         assert!(actlen.is_none_or(|x| x < (comlen-n)*N && x > (comlen-n-1)*N ));
         assert!(self.comlen()*N >= n*N + mb.len() + actlen.unwrap_or(0));
 
-        let m = self.to_ntt_ring_ref(mb, actlen.map(|x| x % N));
+        let m = self.ring().to_ntt_ring_ref(mb, actlen.map(|x| x % N));
 
         let offs = actlen.map_or(comlen - n, |x| x/N);
         let precomp = self.precomp.borrow();

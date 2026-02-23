@@ -188,21 +188,21 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 
         let fsclone = self.fs.borrow().clone();
         let mut rng = self.cs.rng().borrow_mut();
-        let flatop = self.cs.to_base_ring_ref(op);
-        let flaty2 = self.cs.to_base_ring(y2.into_iter());
+        let flatop = self.ring().to_base_ring_ref(op);
+        let flaty2 = self.ring().to_base_ring(y2.into_iter());
 
         let (z1, z2, fscnt) = if self.cs.has_ajtai() {
             let mut fsmut = self.fs.borrow_mut();
 
-            let flaty1 = self.cs.to_base_ring_ref(y1.as_ref().unwrap());
-            let flats1 = self.cs.to_base_ring_ref(mes.s1().unwrap());
+            let flaty1 = self.ring().to_base_ring_ref(y1.as_ref().unwrap());
+            let flats1 = self.ring().to_base_ring_ref(mes.s1().unwrap());
             let (zt, fscnt) = gen_vector_latrejsampl(self.ring().base_ring(),
                 &mut rng, &mut fsmut,
                 &self.challbnd, [self.gamma.0.unwrap(), self.gamma.1],
                 [self.get_sigma(ABDLOPparts::Ajtai), self.get_sigma(ABDLOPparts::BDLOP)],
                 self.rsmode, [&flaty1, &flaty2], [&flats1, &flatop]);
             let (z1, z2) = zt.into();
-            (Some(self.cs.to_ntt_ring(z1.into_iter())), z2, fscnt)
+            (Some(self.ring().to_ntt_ring(z1.into_iter())), z2, fscnt)
         } else {
             let mut fsmut = self.fs.borrow_mut();
             let (zt, fscnt) = gen_vector_latrejsampl(self.ring().base_ring(),
@@ -215,21 +215,23 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 
         self.fs.replace(fsclone);
 
-        LatSigmaProof{ z1, z2: self.cs.to_ntt_ring(z2.into_iter()), w, vneg, fscnt }
+        LatSigmaProof{ z1, z2: self.ring().to_ntt_ring(z2.into_iter()), w, vneg, fscnt }
     }
 
     pub fn precomp(&self) {
         let mut rng = self.cs.rng().borrow_mut();
 
-        let y2 = self.cs.to_ntt_ring(gen_vector_dgauss(self.ring().base_ring(), &mut rng,
+        let y2 = self.ring().to_ntt_ring(gen_vector_dgauss(self.ring().base_ring(), &mut rng,
             self.get_sigma(ABDLOPparts::BDLOP), self.cs.get_A2().columns()*N).into_iter());
         let By2 = self.cs.get_B().as_ref().map(|B| B.mul(&y2));
         let (w, y1) = {
             let tmpw = self.cs.get_A2().mulit(&y2);
             if self.cs.has_ajtai() {
-                let y1 = self.cs.to_ntt_ring(gen_vector_dgauss(self.ring().base_ring(), &mut rng,
-                    self.get_sigma(ABDLOPparts::Ajtai), self.cs.get_A1().unwrap().columns()*N
-                ).into_iter());
+                let y1 = self.ring().to_ntt_ring(
+                    gen_vector_dgauss(self.ring().base_ring(), &mut rng,
+                        self.get_sigma(ABDLOPparts::Ajtai),
+                        self.cs.get_A1().unwrap().columns()*N
+                    ).into_iter());
                 let resw = tmpw.zip(self.cs.get_A1().unwrap().mulit(&y1)).map(|(l, r)|
                     self.ring().add(l, r)).collect_vec();
                 (resw, Some(y1))
@@ -252,11 +254,11 @@ impl<'a, R, MM1, const N: usize> LatSigma<'a, R, MM1, SparseMatrixMul<'a, R>, N>
         let basering = ring.base_ring();
         let intring = basering.integer_ring();
         if let Some(z1) = proof.z1.as_ref() {
-            let flatz1 = self.cs.to_base_ring_ref(z1);
+            let flatz1 = self.ring().to_base_ring_ref(z1);
             if norm2(basering, &intring, &flatz1) > self.get_zbound(ABDLOPparts::Ajtai)
                 { return false }
         }
-        let flatz2 = self.cs.to_base_ring_ref(&proof.z2);
+        let flatz2 = self.ring().to_base_ring_ref(&proof.z2);
         if norm2(basering, &intring, &flatz2) > self.get_zbound(ABDLOPparts::BDLOP)
             { return false }
         
