@@ -4,24 +4,23 @@ use itertools::Itertools;
 
 use feanor_math::seq::VectorFn;
 use feanor_math::delegate::{DelegateRing, DelegateRingImplFiniteRing};
-use feanor_math::homomorphism::{Homomorphism, CanHomFrom, Identity, CanIsoFromTo, CanHom};
+use feanor_math::homomorphism::{Homomorphism, CanHomFrom, Identity, CanIsoFromTo};
 use feanor_math::integer::{BigIntRing, BigIntRingBase};
 use feanor_math::ring::{ RingStore, RingBase, RingValue, RingExtension, El};
 use feanor_math::rings::{
     extension::{
-        extension_impl::FreeAlgebraImpl,
+        extension_impl::{FreeAlgebraImpl, FreeAlgebraImplBase},
         FreeAlgebraStore
     },
     zn::{ ZnRing, ZnRingStore },
     finite::FiniteRing,
-    direct_power::{DirectPowerRing, DirectPowerRingBase},
-    field::{AsField, AsFieldBase}
+    direct_power::{DirectPowerRing, DirectPowerRingBase}
 };
 use feanor_math::divisibility::DivisibilityRing;
 use feanor_math::ordered::OrderedRingStore;
 use feanor_math::algorithms::{
     fft::{FFTAlgorithm, cooley_tuckey::CooleyTuckeyFFT},
-    unity_root::get_prim_root_of_unity
+    unity_root::{get_prim_root_of_unity, is_prim_root_of_unity}
 };
 
 use crate::{
@@ -34,19 +33,14 @@ use crate::{
 pub const ZZbig: BigIntRing = BigIntRing::RING;
 
 
-// NOTE *: only zn_64 and zn_big use the impl_field_wrap_unwrap_homs! to implement the
-// AsFieldBase<R>: CanHomFrom<R::Type> homomorphism
-// TODO: implement this generically for all R where R::Type: DivisibilityRing in feanor_math?
-pub struct ABDLOPRingBase<R, const N: usize>
-    where R: RingStore<Type: DivisibilityRing>, AsFieldBase<R>: CanHomFrom<R::Type> // NOTE: see *
+pub struct ABDLOPRingBase<R: RingStore, const N: usize>
 {
-    pr: DirectPowerRing<AsField<R>, N>,
-    fft: CooleyTuckeyFFT<AsFieldBase<R>, AsFieldBase<R>, Identity<AsField<R>>>,
-    hom: CanHom<R, AsField<R>>
+    pr: DirectPowerRing<R, N>,
+    fft: CooleyTuckeyFFT<R::Type, R::Type, Identity<R>>,
 }
 
 impl<R, const N: usize> PartialEq for ABDLOPRingBase<R, N>
-    where R: RingStore<Type: DivisibilityRing>, AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore<Type: DivisibilityRing>
 {
     fn eq(&self, other: &Self) -> bool {
         self.fft.eq(&other.fft) && self.pr.get_ring().eq(other.pr.get_ring())
@@ -54,16 +48,10 @@ impl<R, const N: usize> PartialEq for ABDLOPRingBase<R, N>
 }
 
 impl<R, const N: usize> DelegateRing for ABDLOPRingBase<R, N>
-    where R: RingStore<Type: DivisibilityRing>, AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore<Type: DivisibilityRing>
 {
-    // TODO: basering of DirectPowerRing does not actually have to be field,
-    // (for some reason this is required for the get_prim_root_of_unity method)
-    type Base = DirectPowerRingBase<AsField<R>, N>;
-    // NOTE: ideally implement like below and then explicitly implement RingBase
-    // similar to fheanor ManagedDoubleRNSRingBase
-    // the bool remembers whether it is in NTT form or not
-    // type Element = (El<DirectPowerRing<RFFT, N>>, bool);
-    type Element = El<DirectPowerRing<AsField<R>, N>>;
+    type Base = DirectPowerRingBase<R, N>;
+    type Element = El<DirectPowerRing<R, N>>;
  
     fn get_delegate(&self) -> &Self::Base {
         self.pr.get_ring()
@@ -81,46 +69,50 @@ impl<R, const N: usize> DelegateRing for ABDLOPRingBase<R, N>
 }
 
 impl<R, const N: usize> DelegateRingImplFiniteRing  for ABDLOPRingBase<R, N>
-    where R: RingStore<Type: DivisibilityRing>, AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore<Type: DivisibilityRing>
 {}
 
 impl<R, const N: usize> ABDLOPRingBase<R, N>
-    where R: RingStore<Type: ZnRing> + Clone, AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore<Type: DivisibilityRing> + Clone
 {
-    pub fn new(basering: R) -> Self {
+    pub fn new(basering: R, root: El<R>) -> Self {
         assert!(N.is_power_of_two());
+        assert!(is_prim_root_of_unity(&basering, &root, N));
+
+        let fft = CooleyTuckeyFFT::new(basering.clone(), root, N.ilog2() as usize);
+        let pr = DirectPowerRing::new(basering);
+
+        Self { pr, fft }
+    }
+}
+
+impl<R, const N: usize> ABDLOPRingBase<R, N>
+    where R: RingStore<Type: ZnRing> + Clone
+{
+    pub fn new_promise_is_perfect_field(basering: R) -> Self {
 
         let field = basering.clone().as_field().ok().expect("Provided ring is not a field");
         let root = get_prim_root_of_unity(&field, N)
             .expect(format!("Field does not have {}th primitive root of unity", N).as_str());
-        let fft = CooleyTuckeyFFT::new(field.clone(), root, N.ilog2() as usize);
-        let pr = DirectPowerRing::new(field.clone());
-        let hom = field.into_can_hom(basering).ok().unwrap();
-
-        Self { pr, fft, hom }
+        Self::new(basering, field.get_ring().unwrap_element(root))
     }
 }
 
 pub type ABDLOPRing<R, const N: usize> = RingValue<ABDLOPRingBase<R,N>>;
 
 
-type ExtR<R> = FreeAlgebraImpl<AsField<R>,[El<AsField<R>>; 2]>;
-type ExtFb<R> = AsFieldBase<ExtR<R>>;
-type ExtF<R> = RingValue<ExtFb<R>>;
+type ExtRb<R> = FreeAlgebraImplBase<R, [El<R>; 2]>;
+type ExtR<R> = RingValue<ExtRb<R>>;
 
-pub struct ABDLOPRingExtBase<R, const N: usize>
-    where R: RingStore<Type: DivisibilityRing + CanIsoFromTo<R::Type>>,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+pub struct ABDLOPRingExtBase<R: RingStore, const N: usize>
+    where R: RingStore, ExtRb<R>: DivisibilityRing
 {
-    pr: DirectPowerRing<ExtF<R>, N>,
-    fft: CooleyTuckeyFFT<ExtFb<R>, ExtFb<R>, Identity<ExtF<R>>>,
-    basehom: CanHom<R, AsField<R>>,
-    hom: CanHom<ExtR<R>, ExtF<R>>
+    pr: DirectPowerRing<ExtR<R>, N>,
+    fft: CooleyTuckeyFFT<ExtRb<R>, ExtRb<R>, Identity<ExtR<R>>>,
 }
 
 impl<R, const N: usize> PartialEq for ABDLOPRingExtBase<R, N>
-    where R: RingStore<Type: DivisibilityRing + CanIsoFromTo<R::Type>>,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore, ExtRb<R>: DivisibilityRing
 {
     fn eq(&self, other: &Self) -> bool {
         self.fft.eq(&other.fft) && self.pr.get_ring().eq(other.pr.get_ring())
@@ -128,11 +120,10 @@ impl<R, const N: usize> PartialEq for ABDLOPRingExtBase<R, N>
 }
 
 impl<R, const N: usize> DelegateRing for ABDLOPRingExtBase<R, N>
-    where R: RingStore<Type: DivisibilityRing + CanIsoFromTo<R::Type>>,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore, ExtRb<R>: DivisibilityRing
 {
-    type Base = DirectPowerRingBase<ExtF<R>, N>;
-    type Element = El<DirectPowerRing<ExtF<R>, N>>;
+    type Base = DirectPowerRingBase<ExtR<R>, N>;
+    type Element = El<DirectPowerRing<ExtR<R>, N>>;
  
     fn get_delegate(&self) -> &Self::Base {
         self.pr.get_ring()
@@ -150,76 +141,83 @@ impl<R, const N: usize> DelegateRing for ABDLOPRingExtBase<R, N>
 }
 
 impl<R, const N: usize> DelegateRingImplFiniteRing  for ABDLOPRingExtBase<R, N>
-    where R: RingStore<Type: DivisibilityRing + CanIsoFromTo<R::Type>>,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore, ExtRb<R>: DivisibilityRing
 {}
 
 pub type ABDLOPRingExt<R, const N: usize> = RingValue<ABDLOPRingExtBase<R,N>>;
 
 
 impl<R, const N: usize> ABDLOPRingExtBase<R, N>
-    where R: RingStore<Type: DivisibilityRing + ZnRing + CanIsoFromTo<R::Type>> + Clone,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+    where R: RingStore + Clone, ExtRb<R>: DivisibilityRing
 {
-    pub fn new(basering: R) -> Self {
+    pub fn new(basering: R, root: El<ExtR<R>>) -> Self {
+        assert!(N.is_power_of_two());
+        let fring = FreeAlgebraImpl::new(basering.clone(), 2,
+            [basering.neg_one(), basering.zero()]);
+        assert!(is_prim_root_of_unity(&fring, &root, N));
+
+        let fft = CooleyTuckeyFFT::new(fring, root, N.ilog2() as usize);
+        let fring2 = FreeAlgebraImpl::new(basering.clone(), 2,
+            [basering.neg_one(), basering.zero()]);
+        let pr = DirectPowerRing::<_, N>::new(fring2);
+
+        Self { pr, fft }
+    }
+
+    fn fring(&self) -> &ExtR<R> { &self.pr.get_ring().base_ring() }
+}
+
+impl<R, const N: usize> ABDLOPRingExtBase<R, N>
+    where R: RingStore<Type: ZnRing + CanIsoFromTo<R::Type>> + Clone
+{
+    pub fn new_promise_is_perfect_field(basering: R) -> Self {
         assert!(N.is_power_of_two());
 
-        let field = basering.clone().as_field().ok()
-            .expect("Provided ring is not a field");
+        let field = basering.clone().as_field().ok().expect("Provided ring is not a field");
 
-        let basehom = field.clone().into_can_hom(basering).ok().unwrap();
         let fring = FreeAlgebraImpl::new(field.clone(), 2, [field.neg_one(), field.zero()]);
         let gf = fring.as_field().ok().unwrap();
 
-        // TODO: clean this
-        let fring = FreeAlgebraImpl::new(field.clone(), 2, [field.neg_one(), field.zero()]);
-        let gfclone = fring.as_field().ok().unwrap();
-        let fring = FreeAlgebraImpl::new(field.clone(), 2, [field.neg_one(), field.zero()]);
-        let hom = gfclone.into_can_hom(fring).ok().unwrap();
-
-        // TODO: clean this
-        let fring = FreeAlgebraImpl::new(field.clone(), 2, [field.neg_one(), field.zero()]);
-        let gfclone = fring.as_field().ok().unwrap();
-
         let root = get_prim_root_of_unity(&gf, N)
             .expect("Fp2 does not have primitive root of unity");
+        let fring = FreeAlgebraImpl::new(field.clone(), 2, [field.neg_one(), field.zero()]);
+        let fring2 = FreeAlgebraImpl::new(basering.clone(), 2,
+            [basering.neg_one(), basering.zero()]);
+        let root2 = fring2.from_canonical_basis(fring.wrt_canonical_basis(
+            &gf.get_ring().unwrap_element(root)).into_iter().map(|el|
+                field.get_ring().unwrap_element(el)));
 
-        let fft = CooleyTuckeyFFT::new(gfclone, root, N.ilog2() as usize);
-        let pr = DirectPowerRing::<_, N>::new(gf);
-
-        Self { pr, fft, basehom, hom }
+        Self::new(basering, root2)
     }
-
-    fn fring(&self) -> &ExtR<R> { &self.hom.domain() }
 }
 
 
-pub trait ABDLOPRingNTT<const N: usize>: RingStore<Type: FiniteRing> {
+pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
 
     type BaseRing: RingStore<Type: CanHomFrom<BigIntRingBase> + ZnRing>;
-    type FFTRing: RingStore<Type: DivisibilityRing>;
+    type NTTRing: RingStore<Type: DivisibilityRing>;
 
     fn base_ring(&self) -> &Self::BaseRing;
 
-    fn FFTring(&self) -> &Self::FFTRing;
+    fn NTT_ring(&self) -> &Self::NTTRing;
     
-    fn to_FFTRing(&self, inp: El<Self::BaseRing>) -> El<Self::FFTRing>;
-    fn to_BaseRing(&self, inp: El<Self::FFTRing>) -> El<Self::BaseRing>;
+    fn to_NTTRing(&self, inp: El<Self::BaseRing>) -> El<Self::NTTRing>;
+    fn to_BaseRing(&self, inp: El<Self::NTTRing>) -> El<Self::BaseRing>;
 
-    fn ffter(&self) -> &CooleyTuckeyFFT<<Self::FFTRing as RingStore>::Type,
-        <Self::FFTRing as RingStore>::Type, Identity<Self::FFTRing>>;
+    fn NTTer(&self) -> &CooleyTuckeyFFT<<Self::NTTRing as RingStore>::Type,
+        <Self::NTTRing as RingStore>::Type, Identity<Self::NTTRing>>;
 
     // NOTE: weird that these methods are needed
-    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::FFTRing, N>>;
-    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::FFTRing, N>>;
-    fn from_array(inp: El<DirectPowerRing<Self::FFTRing, N>>) -> El<Self>;
+    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>>;
+    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>>;
+    fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self>;
 
     fn ntt(&self, el: &mut El<Self>) {
-        self.ffter().fft(Self::to_array_mut(el), self.FFTring())
+        self.NTTer().fft(Self::to_array_mut(el), self.NTT_ring())
     }
 
     fn intt(&self, el: &mut El<Self>) {
-        self.ffter().inv_fft(Self::to_array_mut(el), self.FFTring())
+        self.NTTer().inv_fft(Self::to_array_mut(el), self.NTT_ring())
     }
 
     fn scalar_mul_ref(&self, scalar: &El<Self::BaseRing>, inp: &El<Self>) -> El<Self> {
@@ -228,81 +226,70 @@ pub trait ABDLOPRingNTT<const N: usize>: RingStore<Type: FiniteRing> {
 
     fn scalar_mul(&self, scalar: &El<Self::BaseRing>, inp: El<Self>) -> El<Self> {
         Self::from_array(Self::to_array(inp).map(|el|
-            self.FFTring().mul(el, self.to_FFTRing(self.base_ring().clone_el(scalar)))))
-    }
+            self.NTT_ring().mul(el, self.to_NTTRing(self.base_ring().clone_el(scalar))))) }
 }
 
-impl<R, const N: usize> ABDLOPRingNTT<N> for ABDLOPRing<R, N>
-    where R: RingStore<Type: ZnRing + CanHomFrom<BigIntRingBase>>,
-          AsFieldBase<R>: CanHomFrom<R::Type>
+impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRing<R, N>
+    where R: RingStore<Type: ZnRing + CanHomFrom<BigIntRingBase>>
 {
     type BaseRing = R;
-    type FFTRing = AsField<R>;
+    type NTTRing = R;
 
-    fn base_ring(&self) -> &Self::BaseRing { self.get_ring().hom.domain() }
+    fn base_ring(&self) -> &Self::BaseRing { self.get_ring().base_ring() }
 
-    fn FFTring(&self) -> &Self::FFTRing { self.get_ring().base_ring() }
+    fn NTT_ring(&self) -> &Self::NTTRing { self.base_ring() }
 
-    fn to_FFTRing(&self, inp: El<Self::BaseRing>) -> El<Self::FFTRing> {
-        self.get_ring().hom.map(inp)
-    }
+    fn to_NTTRing(&self, inp: El<Self::BaseRing>) -> El<Self::NTTRing> { inp }
 
-    fn to_BaseRing(&self, inp: El<Self::FFTRing>) -> El<Self::BaseRing> {
-        self.FFTring().get_ring().unwrap_element(inp)
-    }
+    fn to_BaseRing(&self, inp: El<Self::NTTRing>) -> El<Self::BaseRing> { inp }
 
-    fn ffter(&self) -> &CooleyTuckeyFFT<<Self::FFTRing as RingStore>::Type, <Self::FFTRing as RingStore>::Type, Identity<Self::FFTRing>>
+    fn NTTer(&self) -> &CooleyTuckeyFFT<R::Type, R::Type, Identity<R>>
     { &self.get_ring().fft }
 
-    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::FFTRing, N>> { inp }
-    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::FFTRing, N>> { inp }
-    fn from_array(inp: El<DirectPowerRing<Self::FFTRing, N>>) -> El<Self> { inp }
+    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
 }
 
-impl<R, const N: usize> ABDLOPRingNTT<N> for ABDLOPRingExt<R, N>
-    where R: RingStore<Type: ZnRing + CanIsoFromTo<R::Type>
-        + CanHomFrom<BigIntRingBase>> + Clone, AsFieldBase<R>: CanHomFrom<R::Type>
+impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRingExt<R, N>
+    where R: RingStore<Type: ZnRing + CanHomFrom<BigIntRingBase>> + Clone
 {
     type BaseRing = R;
-    type FFTRing = ExtF<R>;
+    type NTTRing = ExtR<R>;
 
-    fn base_ring(&self) -> &Self::BaseRing { &self.get_ring().basehom.domain() }
+    fn base_ring(&self) -> &Self::BaseRing { self.get_ring().base_ring().get_ring().base_ring() }
 
-    fn FFTring(&self) -> &Self::FFTRing { self.get_ring().base_ring() }
+    fn NTT_ring(&self) -> &Self::NTTRing { self.get_ring().base_ring() }
 
-    fn to_FFTRing(&self, inp: El<Self::BaseRing>) -> El<Self::FFTRing> {
-        let ring = self.get_ring();
-        let basering = ring.base_ring().get_ring().base_ring();
-        ring.hom.map(ring.fring().from_canonical_basis([ring.basehom.map(inp), basering.zero()]))
+    fn to_NTTRing(&self, inp: El<Self::BaseRing>) -> El<Self::NTTRing> {
+        self.get_ring().fring().from_canonical_basis([inp, self.base_ring().zero()])
     }
 
-    fn to_BaseRing(&self, inp: El<Self::FFTRing>) -> El<Self::BaseRing> {
-        let ring = self.get_ring();
-        ring.basehom.codomain().get_ring().unwrap_element(ring.fring().wrt_canonical_basis(
-            &self.FFTring().get_ring().unwrap_element(inp)).at(0))
+    fn to_BaseRing(&self, inp: El<Self::NTTRing>) -> El<Self::BaseRing> {
+        self.get_ring().fring().wrt_canonical_basis(&inp).at(0)
     }
 
-    fn ffter(&self) -> &CooleyTuckeyFFT<<Self::FFTRing as RingStore>::Type,
-        <Self::FFTRing as RingStore>::Type, Identity<Self::FFTRing>>
+    fn NTTer(&self) -> &CooleyTuckeyFFT<<Self::NTTRing as RingStore>::Type,
+        <Self::NTTRing as RingStore>::Type, Identity<Self::NTTRing>>
     { &self.get_ring().fft }
 
-    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::FFTRing, N>> { inp }
-    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::FFTRing, N>> { inp }
-    fn from_array(inp: El<DirectPowerRing<Self::FFTRing, N>>) -> El<Self> { inp }
+    fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
 
     // TODO: make ntt methods go back to basering?
 }
 
 
 pub struct ABDLOPcommitment<R, const N: usize>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     // NOTE: always assumed to be in NTT form
     t: Vec<El<R>>
 }
 
 impl<R, const N: usize> Deref for ABDLOPcommitment<R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     type Target = Vec<El<R>>;
 
@@ -310,14 +297,14 @@ impl<R, const N: usize> Deref for ABDLOPcommitment<R, N>
 }
 
 impl<R, const N: usize> DerefMut for ABDLOPcommitment<R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     fn deref_mut(&mut self) -> &mut Self::Target { &mut self.t }
 }
 
 
 pub struct ABDLOPmessage<'a, R, const N: usize>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     // NOTE: both always assumed to be in NTT form
     s1: Option<&'a Vec<El<R>>>,
@@ -325,7 +312,7 @@ pub struct ABDLOPmessage<'a, R, const N: usize>
 }
 
 impl<'a, R, const N: usize> ABDLOPmessage<'a, R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     pub fn new(s1: &'a Option<Vec<El<R>>>, m: &'a Option<Vec<El<R>>>) -> Self
     {
@@ -340,14 +327,14 @@ impl<'a, R, const N: usize> ABDLOPmessage<'a, R, N>
 
 
 pub struct ABDLOPopening<R, const N: usize>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     // NOTE: always assumed to be in NTT form
     s2: Vec<El<R>>
 }
 
 impl<R, const N: usize> Deref for ABDLOPopening<R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     type Target = Vec<El<R>>;
 
@@ -360,7 +347,7 @@ pub enum ABDLOPparts { Ajtai, BDLOP }
 
 
 struct ABDLOPprecomp<R, const N: usize>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     // NOTE: all always assumed to be in NTT form
     s2: RefCell<ABDLOPopening<R,N>>,
@@ -369,7 +356,7 @@ struct ABDLOPprecomp<R, const N: usize>
 }
 
 impl<R, const N: usize> ABDLOPprecomp<R,N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     fn empty() -> Self {
         Self {
@@ -394,9 +381,10 @@ impl<R, const N: usize> ABDLOPprecomp<R,N>
 
 
 pub struct ABDLOP<'a, R, const N: usize>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     ring: &'a R,
+    // TODO: is there is noticable difference in performance when using RefCell for the RNG?
     rng: RefCell<FSRng>,
     bnd1: Option<El<BigIntRing>>, // TODO: add possibility for 2norm bounds
     bnd2: El<BigIntRing>,
@@ -407,7 +395,7 @@ pub struct ABDLOP<'a, R, const N: usize>
 }
 
 impl<'a, R, const N: usize> ABDLOP<'a, R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     pub fn random(ring: &'a R, mut rng: FSRng,
         n: usize, l: Option<usize>, m1: Option<usize>, m2: usize,
@@ -426,7 +414,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 }
 
 impl<'a, R, const N: usize> ABDLOP<'a, R, N>
-    where R: ABDLOPRingNTT<N>
+    where R: ABDLOPRingTrait<N>
 {
     pub fn ring(&self) -> &R { self.ring }
 
@@ -454,8 +442,8 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
     pub fn comlen(&self) -> usize { self.A2.rows() + self.get_B().map_or(0, |x| x.rows()) }
 
-    // TODO: make next four functions provided methods for ABDLOPRingNTT?
-    fn to_ntt_ring_ref(&self, inp: &[El<<R as ABDLOPRingNTT<N>>::BaseRing>],
+    // TODO: make next four functions provided methods for ABDLOPRingTrait?
+    fn to_ntt_ring_ref(&self, inp: &[El<<R as ABDLOPRingTrait<N>>::BaseRing>],
         prefixlen: Option<usize>) -> Vec<El<R>>
     {
         assert!(prefixlen.is_none_or(|x| x < N));
@@ -463,44 +451,42 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         self.to_ntt_ring(
             (0..tmp).map(|_| self.base_ring().zero())
             .chain(inp.iter().map(|el| self.base_ring().clone_el(el)))
-            .chain(((dbg!(inp.len()) + dbg!(tmp))..dbg!((inp.len() + tmp).next_multiple_of(N)))
-                .map(|_| self.base_ring().zero())).collect()
+            .chain(((inp.len() + tmp)..(inp.len() + tmp).next_multiple_of(N))
+                .map(|_| self.base_ring().zero()))
         )
     }
 
-    // TODO: input iterator?
-    pub fn to_ntt_ring(&self, inp: Vec<El<<R as ABDLOPRingNTT<N>>::BaseRing>>) -> Vec<El<R>>
+    pub fn to_ntt_ring(&self, inp: impl Iterator<Item = El<<R as ABDLOPRingTrait<N>>::BaseRing>>)
+        -> Vec<El<R>>
     {
-        assert!(inp.len() % N == 0);
-        inp.into_iter().map(|el|
-            self.ring().to_FFTRing(el)).collect_vec().into_chunks::<N>().into_iter().map(|el|
-                R::from_array(el)).collect_vec()
+        // assert!(inp.count() % N == 0);
+        inp.map(|el| self.ring().to_NTTRing(el)).collect_vec()
+            .into_chunks::<N>().into_iter().map(|el| R::from_array(el)).collect_vec()
     }
 
-    pub fn to_base_ring_ref(&self, inp: &[El<R>]) -> Vec<El<<R as ABDLOPRingNTT<N>>::BaseRing>>
+    pub fn to_base_ring_ref(&self, inp: &[El<R>]) -> Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>
     {
-        self.to_base_ring(inp.iter().map(|el| self.ring().clone_el(el)).collect())
+        self.to_base_ring(inp.iter().map(|el| self.ring().clone_el(el)))
     }
 
-    // TODO: input iterator?
-    pub fn to_base_ring(&self, inp: Vec<El<R>>) -> Vec<El<<R as ABDLOPRingNTT<N>>::BaseRing>>
+    pub fn to_base_ring(&self, inp: impl Iterator<Item = El<R>>)
+        -> Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>
     {
-        inp.into_iter().flat_map(|el| R::to_array(el))
-            .map(|el| self.ring().to_BaseRing(el)).collect()
+        inp.flat_map(|el| R::to_array(el)).map(|el| self.ring().to_BaseRing(el)).collect()
     }
 
-    pub fn gen_m(&self, inp: Vec<El<<R as ABDLOPRingNTT<N>>::BaseRing>>) -> Vec<El<R>> {
+    pub fn gen_m(&self, inp: Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>) -> Vec<El<R>> {
         if !(inp.len() % N == 0) {
             panic!("Input to ABDLOP::gen_m must have length divisible by N");
         }
-        self.to_ntt_ring(inp)
+        self.to_ntt_ring(inp.into_iter())
     }
 
-    pub fn gen_s1(&self, inp: Vec<El<<R as ABDLOPRingNTT<N>>::BaseRing>>) -> Vec<El<R>> {
+    pub fn gen_s1(&self, inp: Vec<El<<R as ABDLOPRingTrait<N>>::BaseRing>>) -> Vec<El<R>> {
         if !(inp.len() % N == 0) {
             panic!("Input to ABDLOP::gen_s1 must have length divisible by N");
         }
-        let mut res = self.to_ntt_ring(inp);
+        let mut res = self.to_ntt_ring(inp.into_iter());
         if !self.check_inf_norm::<false>(&res, self.bnd1.as_ref().unwrap()) {
             panic!("Input to ABDLOP::gen_s1 must be bounded by ABDLOP::get_bnd1");
         }
@@ -532,7 +518,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
     fn gen_s2(&self) -> Vec<El<R>> {
         let mut rngmut = self.rng.borrow_mut();
         let mut s2 = self.to_ntt_ring(gen_vector_infbnd(self.base_ring(),
-            &mut rngmut, &self.bnd2, self.A2.columns()*N));
+            &mut rngmut, &self.bnd2, self.A2.columns()*N).into_iter());
         s2.iter_mut().for_each(|s2el| self.ring().ntt(s2el)); // go to NTT representation
         s2
     }
@@ -588,7 +574,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
     }
 
     pub fn append_commit(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
-        mb: &[El<<R as ABDLOPRingNTT<N>>::BaseRing>], actlen: Option<usize>)
+        mb: &[El<<R as ABDLOPRingTrait<N>>::BaseRing>], actlen: Option<usize>)
     {
         let comlen = com.len();
         let n = self.A2.rows();
@@ -599,7 +585,6 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         assert!(self.comlen()*N >= n*N + mb.len() + actlen.unwrap_or(0));
 
         let m = self.to_ntt_ring_ref(mb, actlen.map(|x| x % N));
-        println!("len m: {}", m.len());
 
         let offs = actlen.map_or(comlen - n, |x| x/N);
         let precomp = self.precomp.borrow();
@@ -615,7 +600,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         if let Some(actlen) = actlen {
             let mut first = newcom.next().unwrap();
             R::to_array_mut(&mut first)[..(actlen % N)].iter_mut()
-                .for_each(|el| *el = self.ring().FFTring().zero());
+                .for_each(|el| *el = self.ring().NTT_ring().zero());
             self.ring().add_assign(&mut com[comlen-1], first);
         }
 
@@ -627,7 +612,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
             let comlen = com.len();
             let tmp = &mut com[comlen-1];
             R::to_array_mut(tmp)[(totlen % N)..].iter_mut().for_each(|el|
-                *el = self.ring().FFTring().zero());
+                *el = self.ring().NTT_ring().zero());
         }
     }
 
@@ -675,7 +660,7 @@ mod tests {
         let ring = feanor_math::rings::zn::zn_64::Zn::new(65537);
 
         const N: usize = 1 << 12;
-        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new(ring.clone()));
+        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
 
         let n = 2;
         let l = 2;
@@ -715,7 +700,7 @@ mod tests {
         let ring = feanor_math::rings::zn::zn_64::Zn::new(65537);
 
         const N: usize = 1 << 12;
-        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new(ring.clone()));
+        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
 
         let n = 2;
         let l = 3;
@@ -739,23 +724,18 @@ mod tests {
                 abdlop.get_bnd1().as_ref().unwrap(), m2*N)));
         let mut m = gen_random(&ring, &mut rng, N);
 
-        println!("Precomp");
         abdlop.precomp();
 
-        println!("Commit");
         let mopt = Some(abdlop.gen_m(m.iter().map(|el| ring.clone_el(el)).collect()));
         let mes = ABDLOPmessage::new(&s1, &mopt);
         let (mut com, op) = abdlop.commit(&mes);
 
-        println!("Append 1");
         let mext = gen_random(&ring, &mut rng, N - 15);
         abdlop.append_commit(&mut com, &op, &mext, None);
 
-        println!("Append 2");
         let mext2 = gen_random(&ring, &mut rng, N + 10);
         abdlop.append_commit(&mut com, &op, &mext2, Some(2*N - 15));
 
-        println!("Append 3");
         let mext3 = gen_random(&ring, &mut rng, 5);
         abdlop.append_commit(&mut com, &op, &mext3, Some(l*N - 5));
 
@@ -774,7 +754,7 @@ mod tests {
         let p = ZZbig.get_ring().parse("864175120484581453683482079962486176185193500155369104423588921177379322250834082489183304374038697487834084609675858746433355728113743766078731283595263", 10).unwrap();
         let ring = Zn::new(ZZbig, p);
         const N: usize = 1 << 12;
-        let abdlopring = RingValue::from(ABDLOPRingExtBase::<_, N>::new(ring.clone()));
+        let abdlopring = RingValue::from(ABDLOPRingExtBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
 
         let n = 2;
         let l = 2;

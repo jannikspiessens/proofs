@@ -10,7 +10,7 @@ use feanor_math::rings::{
 use crate::{
     FSRng,
     commit::abdlop::{
-        ZZbig, ABDLOP, ABDLOPcommitment, ABDLOPmessage, ABDLOPopening, ABDLOPparts, ABDLOPRingNTT
+        ZZbig, ABDLOP, ABDLOPcommitment, ABDLOPmessage, ABDLOPopening, ABDLOPparts, ABDLOPRingTrait
     },
     lattice::{gen_infbnd, gen_vector_dgauss, gen_vector_latrejsampl, norm2, RejSamplModes},
     util::{
@@ -81,7 +81,7 @@ pub type LatSigmaDefault<'a, R, const N: usize>
     = LatSigma<'a, R, DenseMatrixMul<'a, R>, SparseMatrixMul<'a, R>, N>;
 
 pub struct LatSigma<'a, R, MM1, MMm, const N: usize>
-    where R: ABDLOPRingNTT<N>, MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
+    where R: ABDLOPRingTrait<N>, MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
 {
     cs: ABDLOP<'a, R, N>,
     fs: RefCell<FiatShamirSim<FSRng>>,
@@ -94,7 +94,7 @@ pub struct LatSigma<'a, R, MM1, MMm, const N: usize>
 }
 
 impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
-    where R: ABDLOPRingNTT<N>, MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
+    where R: ABDLOPRingTrait<N>, MM1: MatrixMul<R = R>, MMm: MatrixMul<R = R>
 {
     pub fn ring(&self) -> &R { self.cs.ring() }
 
@@ -189,7 +189,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         let fsclone = self.fs.borrow().clone();
         let mut rng = self.cs.rng().borrow_mut();
         let flatop = self.cs.to_base_ring_ref(op);
-        let flaty2 = self.cs.to_base_ring(y2);
+        let flaty2 = self.cs.to_base_ring(y2.into_iter());
 
         let (z1, z2, fscnt) = if self.cs.has_ajtai() {
             let mut fsmut = self.fs.borrow_mut();
@@ -202,7 +202,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
                 [self.get_sigma(ABDLOPparts::Ajtai), self.get_sigma(ABDLOPparts::BDLOP)],
                 self.rsmode, [&flaty1, &flaty2], [&flats1, &flatop]);
             let (z1, z2) = zt.into();
-            (Some(self.cs.to_ntt_ring(z1)), z2, fscnt)
+            (Some(self.cs.to_ntt_ring(z1.into_iter())), z2, fscnt)
         } else {
             let mut fsmut = self.fs.borrow_mut();
             let (zt, fscnt) = gen_vector_latrejsampl(self.ring().base_ring(),
@@ -215,20 +215,21 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 
         self.fs.replace(fsclone);
 
-        LatSigmaProof{ z1, z2: self.cs.to_ntt_ring(z2), w, vneg, fscnt }
+        LatSigmaProof{ z1, z2: self.cs.to_ntt_ring(z2.into_iter()), w, vneg, fscnt }
     }
 
     pub fn precomp(&self) {
         let mut rng = self.cs.rng().borrow_mut();
 
         let y2 = self.cs.to_ntt_ring(gen_vector_dgauss(self.ring().base_ring(), &mut rng,
-            self.get_sigma(ABDLOPparts::BDLOP), self.cs.get_A2().columns()*N));
+            self.get_sigma(ABDLOPparts::BDLOP), self.cs.get_A2().columns()*N).into_iter());
         let By2 = self.cs.get_B().as_ref().map(|B| B.mul(&y2));
         let (w, y1) = {
             let tmpw = self.cs.get_A2().mulit(&y2);
             if self.cs.has_ajtai() {
                 let y1 = self.cs.to_ntt_ring(gen_vector_dgauss(self.ring().base_ring(), &mut rng,
-                    self.get_sigma(ABDLOPparts::Ajtai), self.cs.get_A1().unwrap().columns()*N));
+                    self.get_sigma(ABDLOPparts::Ajtai), self.cs.get_A1().unwrap().columns()*N
+                ).into_iter());
                 let resw = tmpw.zip(self.cs.get_A1().unwrap().mulit(&y1)).map(|(l, r)|
                     self.ring().add(l, r)).collect_vec();
                 (resw, Some(y1))
@@ -241,7 +242,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 }
 
 impl<'a, R, MM1, const N: usize> LatSigma<'a, R, MM1, SparseMatrixMul<'a, R>, N>
-    where R: ABDLOPRingNTT<N>, MM1: MatrixMul<R = R>
+    where R: ABDLOPRingTrait<N>, MM1: MatrixMul<R = R>
 {
     pub fn verify(&'a self, com: &ABDLOPcommitment<R,N>, proof: &LatSigmaProof<R>) -> bool {
         if !(proof.z1.is_some() == self.cs.has_ajtai() && com.len() == self.cs.comlen())
@@ -348,7 +349,7 @@ mod tests {
         let ring = feanor_math::rings::zn::zn_64::Zn::new(65537);
 
         const N: usize = 1 << 12;
-        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new(ring.clone()));
+        let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
         
         let n = 2;
         let l = 2;
