@@ -2,6 +2,8 @@
 
 #![feature(generic_const_exprs)]
 
+#![feature(vec_into_chunks)]
+
 #![allow(incomplete_features)]
 
 #![allow(non_upper_case_globals)]

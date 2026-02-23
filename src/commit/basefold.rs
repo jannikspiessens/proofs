@@ -117,7 +117,7 @@ impl<'a, F, SC> BaseFoldPCS<'a, RSFoldableCode<'a, F>, SC>
         let code = RSFoldableCode::new(field, k0, c, d);
         
         // NOTE: fake polyring to efficiently test large instances
-        let polyring = MultivariatePolyRingImpl::new_with(field.clone(),
+        let polyring = MultivariatePolyRingImpl::new_with_mult_table(field.clone(),
             varcount, 0, (0, 0), Global);
         // let polyring = MultivariatePolyRingImpl::new_with(field.clone(),
         //     varcount, 2*varcount as u16, (0, 0), Global);

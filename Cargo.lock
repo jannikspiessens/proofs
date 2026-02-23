@@ -22,9 +22,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "bytemuck"
-version = "1.24.0"
+version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
+checksum = "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
 
 [[package]]
 name = "cfg-if"
@@ -40,13 +40,14 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "feanor-math"
-version = "3.4.3"
+version = "3.5.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ab5fd8061badf86e08ebf179fb53c1bfe7f936af583e03660bf5848e069ecea"
+checksum = "ebf0b27629001a852834e7f0e099eae5dea9b7f7ec956acd1047cee1fc434016"
 dependencies = [
  "append-only-vec",
  "atomicbox",
  "bytemuck",
+ "feanor-serde",
  "libc",
  "oorandom",
  "serde",
@@ -54,6 +55,15 @@ dependencies = [
  "serde_bytes",
  "stability",
  "thread_local",
+]
+
+[[package]]
+name = "feanor-serde"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fa2c7f5c1d04782a554cc8c74e5936d8316463c9c32c9f6e622b354a845ca3"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
