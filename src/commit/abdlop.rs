@@ -397,7 +397,6 @@ pub struct ABDLOP<'a, R, const N: usize>
     where R: ABDLOPRingNTT<N>
 {
     ring: &'a R,
-    // TODO: is there is noticable difference in performance when using RefCell for the RNG?
     rng: RefCell<FSRng>,
     bnd1: Option<El<BigIntRing>>, // TODO: add possibility for 2norm bounds
     bnd2: El<BigIntRing>,

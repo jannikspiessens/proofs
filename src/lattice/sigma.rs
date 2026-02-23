@@ -1,5 +1,5 @@
-use itertools::{izip, Itertools};
 use std::cell::RefCell;
+use itertools::{Itertools, izip};
 
 use feanor_math::integer::{BigIntRing, IntegerRingStore};
 use feanor_math::ring::{ RingStore, El };

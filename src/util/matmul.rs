@@ -76,6 +76,11 @@ impl<'a, R: RingStore> SparseMatrixMul<'a, R>
     pub fn get_data(&self) -> &Vec<Vec<(usize, El<R>)>> {
         &self.data
     }
+
+    pub fn nonzero_entries(&self) -> usize {
+        self.data.iter().map(|row| row.iter().map(|(_, el)|
+            if self.ring.is_zero(el) {0} else {1}).sum::<usize>()).sum()
+    }
 }
 
 // TODO: implement data structure differently so that its size does not depend on dimensions
@@ -120,6 +125,24 @@ impl<'a, R> SparseMatrixMul<'a, R>
             data,
             zero: mm.ring().zero(),
             desc: mm.desc().clone()
+        }
+    }
+
+    pub fn emulFp2lin(self) -> Self {
+        
+        let data = self.data.into_iter().flat_map(|row|
+            (0..2).map(move |i|
+                row.iter().map(|(j, el)| (2*j+i, self.ring.clone_el(el))).collect()
+            )
+        ).collect();
+
+        Self {
+            ring: self.ring,
+            rows: 2*self.rows,
+            columns: 2*self.columns,
+            data,
+            zero: self.zero,
+            desc: self.desc
         }
     }
 }
@@ -213,6 +236,10 @@ impl<'a, R: RingStore> DenseMatrixMul<'a, R> {
         subrows.chunks_exact(self.columns()).map(move |row|
             row[columns.clone()].iter().zip(rhs.iter()).fold(self.ring().zero(), |acc, (ri, rhsi)|
                 self.ring().add(acc, self.ring().mul_ref(ri, rhsi))))
+    }
+
+    pub fn data(&self) -> &Vec<El<R>> {
+        &self.data
     }
 }
 
