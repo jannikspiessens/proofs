@@ -202,7 +202,13 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
     fn NTT_ring(&self) -> &Self::NTTRing;
     
     fn to_NTTRing(&self, inp: El<Self::BaseRing>) -> El<Self::NTTRing>;
+    fn to_NTTRing_ref(&self, inp: &El<Self::BaseRing>) -> El<Self::NTTRing> {
+        self.to_NTTRing(self.base_ring().clone_el(inp))
+    }
     fn to_BaseRing(&self, inp: El<Self::NTTRing>) -> El<Self::BaseRing>;
+    fn to_BaseRing_ref(&self, inp: &El<Self::NTTRing>) -> El<Self::BaseRing> {
+        self.to_BaseRing(self.NTT_ring().clone_el(inp))
+    }
 
     fn NTTer(&self) -> &CooleyTuckeyFFT<<Self::NTTRing as RingStore>::Type,
         <Self::NTTRing as RingStore>::Type, Identity<Self::NTTRing>>;
@@ -211,20 +217,32 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>>;
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>>;
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self>;
+    fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self>;
 
     fn ntt(&self, el: &mut El<Self>) {
         self.NTTer().fft(Self::to_array_mut(el), self.NTT_ring())
     }
+    fn ntt_vec(&self, vec: &mut [El<Self>]) { vec.iter_mut().for_each(|el| self.ntt(el)) }
 
     fn intt(&self, el: &mut El<Self>) {
         self.NTTer().inv_fft(Self::to_array_mut(el), self.NTT_ring())
     }
+    fn intt_vec(&self, vec: &mut [El<Self>]) { vec.iter_mut().for_each(|el| self.intt(el)) }
 
-    fn scalar_mul_ref(&self, scalar: &El<Self::BaseRing>, inp: &El<Self>) -> El<Self> {
-        self.scalar_mul(scalar, self.clone_el(inp))
+    fn from_constant(&self, c0: &El<Self::BaseRing>) -> El<Self> {
+        Self::from_array(core::array::from_fn(|_| self.to_NTTRing_ref(c0)))
     }
 
-    fn scalar_mul(&self, scalar: &El<Self::BaseRing>, inp: El<Self>) -> El<Self> {
+    fn scalar_mul_assign_ref(&self, inp: &mut El<Self>, c: &El<Self::BaseRing>) {
+        Self::to_array_mut(inp).iter_mut().for_each(|el|
+            self.NTT_ring().mul_assign(el, self.to_NTTRing_ref(c)));
+    }
+
+    fn scalar_mul_ref(&self, inp: &El<Self>, scalar: &El<Self::BaseRing>) -> El<Self> {
+        self.scalar_mul(self.clone_el(inp), scalar)
+    }
+
+    fn scalar_mul(&self, inp: El<Self>, scalar: &El<Self::BaseRing>) -> El<Self> {
         Self::from_array(Self::to_array(inp).map(|el|
             self.NTT_ring().mul(el, self.to_NTTRing(self.base_ring().clone_el(scalar))))) }
 
@@ -243,7 +261,7 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
 
     fn to_ntt_ring(&self, inp: impl Iterator<Item = El<Self::BaseRing>>) -> Vec<El<Self>>
     {
-        // assert!(inp.count() % N == 0);
+        // assert!(inp.len() % N == 0);
         inp.map(|el| self.to_NTTRing(el)).collect_vec()
             .into_chunks::<N>().into_iter().map(|el| Self::from_array(el)).collect_vec()
     }
@@ -279,6 +297,7 @@ impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRing<R, N>
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
+    fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self> { inp }
 }
 
 impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRingExt<R, N>
@@ -306,6 +325,7 @@ impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRingExt<R, N>
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
+    fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self> { inp }
 }
 
 
@@ -313,6 +333,7 @@ pub struct ABDLOPcommitment<R, const N: usize>
     where R: ABDLOPRingTrait<N>
 {
     // NOTE: always assumed to be in NTT form
+    // TODO: consider storing in coefficient form to make appending commitments faster?
     t: Vec<El<R>>
 }
 
@@ -331,26 +352,35 @@ impl<R, const N: usize> DerefMut for ABDLOPcommitment<R, N>
 }
 
 
-pub struct ABDLOPmessage<'a, R, const N: usize>
+pub struct ABDLOPmessage<R, const N: usize>
     where R: ABDLOPRingTrait<N>
 {
     // NOTE: both always assumed to be in NTT form
-    s1: Option<&'a Vec<El<R>>>,
-    m: Option<&'a Vec<El<R>>>
+    s1: Option<Vec<El<R>>>,
+    m: Option<Vec<El<R>>>
 }
 
-impl<'a, R, const N: usize> ABDLOPmessage<'a, R, N>
+impl<'a, R, const N: usize> ABDLOPmessage<R, N>
     where R: ABDLOPRingTrait<N>
 {
-    pub fn new(s1: &'a Option<Vec<El<R>>>, m: &'a Option<Vec<El<R>>>) -> Self
+    // NOTE: both inputs assumed to be in coefficient form
+    pub fn new(ring: &R, mut s1: Option<Vec<El<R>>>, mut m: Option<Vec<El<R>>>) -> Self
+        where R: ABDLOPRingTrait<N>
     {
         assert!(s1.is_some() || m.is_some());
-        Self { s1: s1.as_ref(), m: m.as_ref() }
+        s1.as_mut().map(|x| ring.ntt_vec(x));
+        m.as_mut().map(|x| ring.ntt_vec(x));
+        Self { s1, m }
     }
 
-    pub fn s1(&self) -> Option<&'a Vec<El<R>>> { self.s1 }
+    pub fn s1(&self) -> &Option<Vec<El<R>>> { &self.s1 }
 
-    pub fn m(&self) -> Option<&'a Vec<El<R>>> { self.m }
+    pub fn m(&self) -> &Option<Vec<El<R>>> { &self.m }
+
+    // NOTE: m is assumed to be in NTT form
+    pub fn append_m(&mut self, app: Vec<El<R>>) {
+        self.m.as_mut().map(|x| x.extend(app));
+    }
 }
 
 
@@ -512,7 +542,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         let mut rngmut = self.rng.borrow_mut();
         let mut s2 = self.ring().to_ntt_ring(gen_vector_infbnd(self.ring().base_ring(),
             &mut rngmut, &self.bnd2, self.A2.columns()*N).into_iter());
-        s2.iter_mut().for_each(|s2el| self.ring().ntt(s2el)); // go to NTT representation
+        self.ring().ntt_vec(&mut s2);
         s2
     }
 
@@ -528,7 +558,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
         let s2 = self.gen_s2();
         let mut t = Vec::with_capacity(self.comlen());
-        t.extend(self.commit_ajtai(mes.s1(), &s2));
+        t.extend(self.commit_ajtai(mes.s1().as_ref(), &s2));
         if let Some(m) = &mes.m {
             t.extend(self.commit_bdlop(m, &s2, None));
         }
@@ -553,21 +583,59 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
     pub fn open(&self, com: &ABDLOPcommitment<R,N>,
         mes: &ABDLOPmessage<R,N>, op: &ABDLOPopening<R,N>) -> bool
     {
-        let c1 = mes.s1.as_ref().is_none_or(|x|
-            self.check_inf_norm::<true>(x, self.bnd1.as_ref().unwrap())
-        );
+        let c1 = mes.s1.as_ref().is_none_or(|x| {
+            let tmp = x.iter().map(|el| {
+                let mut t = self.ring().clone_el(el);
+                self.ring().intt(&mut t); t
+            }).collect_vec();
+            self.check_inf_norm::<true>(&tmp, self.bnd1.as_ref().unwrap())
+        });
         let c2 = self.check_inf_norm::<true>(op, &self.bnd2);
         if !(c1 && c2 && com.len() == self.comlen()) { return false };
 
-        let mut iter: Box<dyn Iterator<Item = El<R>>> = self.commit_ajtai(mes.s1(), op);
-        if let Some(m) = &mes.m {
+        let mut iter: Box<dyn Iterator<Item = El<R>>> = self.commit_ajtai(mes.s1().as_ref(), op);
+        if let Some(m) = mes.m.as_ref() {
             iter = Box::new(iter.chain(self.commit_bdlop(m, op, None)));
         }
 
         iter.zip(com.iter()).all(|(l, r)| self.ring.eq_el(&l, r))
     }
 
+    fn append_commit_internal<'b>(&'b self, op: &'b ABDLOPopening<R,N>, m: &'b [El<R>],
+        precomp: &'b ABDLOPprecomp<R, N>, offs: usize)
+        -> Box<dyn Iterator<Item = El<R>> + 'b>
+    {
+        if precomp.is_some() {
+            Box::new(precomp.Bs2.as_ref().unwrap()[offs..offs+m.len()].iter().zip(m)
+                .map(|(l,r)| self.ring.add_ref(l, r)))
+        } else {
+            println!("ABDLOP: call precomp first for faster committing!");
+            Box::new(self.commit_bdlop(&m, op, Some(offs)))
+        }
+    }
+
+    // NOTE: m is assumed to be in coefficient form
     pub fn append_commit(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
+        m: &[El<R>])
+    {
+        let comlen = com.len();
+        let n = self.A2.rows();
+        assert!(comlen >= n);
+        assert!(self.has_bdlop());
+
+        let offs = comlen - n;
+
+        let tmp = m.iter().map(|el| {
+            let mut t = self.ring().clone_el(&el);
+            self.ring().ntt(&mut t); t
+        }).collect_vec();
+
+        let precomp = self.precomp.borrow();
+        com.extend(self.append_commit_internal(op, &tmp, &precomp, offs));
+    }
+
+    // NOTE: mb elements are assumed to be coefficients 
+    pub fn append_commit_base(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
         mb: &[El<<R as ABDLOPRingTrait<N>>::BaseRing>], actlen: Option<usize>)
     {
         let comlen = com.len();
@@ -578,24 +646,24 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         assert!(actlen.is_none_or(|x| x < (comlen-n)*N && x > (comlen-n-1)*N ));
         assert!(self.comlen()*N >= n*N + mb.len() + actlen.unwrap_or(0));
 
-        let m = self.ring().to_ntt_ring_ref(mb, actlen.map(|x| x % N));
+        let mut m = self.ring().to_ntt_ring_ref(mb, actlen.map(|x| x % N));
+        self.ring.ntt_vec(&mut m);
 
         let offs = actlen.map_or(comlen - n, |x| x/N);
-        let precomp = self.precomp.borrow();
-        
-        let mut newcom: Box<dyn Iterator<Item = El<R>>> = if precomp.is_some() {
-            Box::new(precomp.Bs2.as_ref().unwrap()[offs..offs+m.len()].iter().zip(m)
-                .map(|(l,r)| self.ring.add_ref_fst(l, r)))
-        } else {
-            println!("ABDLOP: call precomp first for faster committing!");
-            Box::new(self.commit_bdlop(&m, op, Some(offs)))
-        };
 
+        let precomp = self.precomp.borrow();
+        let mut newcom = self.append_commit_internal(op, &m, &precomp, offs);
+
+        // NOTE: deal with previous partial commitment
         if let Some(actlen) = actlen {
             let mut first = newcom.next().unwrap();
+            self.ring().intt(&mut first);
             R::to_array_mut(&mut first)[..(actlen % N)].iter_mut()
                 .for_each(|el| *el = self.ring().NTT_ring().zero());
-            self.ring().add_assign(&mut com[comlen-1], first);
+            self.ring().intt(&mut com[comlen-1]);
+            self.ring().add_assign_ref(&mut com[comlen-1], &first);
+            self.ring().ntt(&mut com[comlen-1]);
+            self.ring().ntt(&mut first);
         }
 
         com.extend(newcom);
@@ -605,8 +673,10 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         if totlen % N != 0 {
             let comlen = com.len();
             let tmp = &mut com[comlen-1];
+            self.ring().intt(tmp);
             R::to_array_mut(tmp)[(totlen % N)..].iter_mut().for_each(|el|
                 *el = self.ring().NTT_ring().zero());
+            self.ring().ntt(tmp);
         }
     }
 
@@ -628,11 +698,11 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
         let mut t = Vec::with_capacity(self.comlen());
         if let Some(A1) = self.get_A1() {
-            t.extend(A1.mulit(mes.s1().unwrap()).zip(A2s2.into_iter()).map(|(l, r)|
+            t.extend(A1.mulit(mes.s1().as_ref().unwrap()).zip(A2s2.into_iter()).map(|(l, r)|
                 self.ring.add(l, r)))
         } else { t.extend(A2s2) };
 
-        if let Some(m) = mes.m {
+        if let Some(m) = mes.m.as_ref() {
             t.extend(Bs2.as_ref().unwrap().into_iter().zip(m).map(|(l,r)| self.ring.add_ref(l,r)))
         }
         (ABDLOPcommitment{ t }, s2)
@@ -674,13 +744,13 @@ mod tests {
         let abdlop = ABDLOP::random(&abdlopring, rng, n, Some(l), m1, m2, bnd1, bnd2);
 
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
-        let s1 = Some(abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
-                abdlop.get_bnd1().as_ref().unwrap(), m2*N)));
-        let m = Some(abdlop.gen_m(gen_random(&ring, &mut rng, l*N)));
+        let s1 = abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
+                abdlop.get_bnd1().as_ref().unwrap(), m2*N));
+        let m = abdlop.gen_m(gen_random(&ring, &mut rng, l*N));
 
         abdlop.precomp();
 
-        let mes = ABDLOPmessage::new(&s1, &m);
+        let mes = ABDLOPmessage::new(&abdlopring, Some(s1), Some(m));
         let now = std::time::SystemTime::now();
         let (com, op) = abdlop.commit(&mes);
         println!("TEST commit time: {}ms", now.elapsed().unwrap().as_millis());
@@ -714,30 +784,30 @@ mod tests {
         let abdlop = ABDLOP::random(&abdlopring, rng, n, Some(l), m1, m2, bnd1, bnd2);
 
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
-        let s1 = Some(abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
-                abdlop.get_bnd1().as_ref().unwrap(), m2*N)));
-        let mut m = gen_random(&ring, &mut rng, N);
+        let s1 = abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
+                abdlop.get_bnd1().as_ref().unwrap(), m2*N));
+        let m = gen_random(&ring, &mut rng, N);
 
         abdlop.precomp();
 
-        let mopt = Some(abdlop.gen_m(m.iter().map(|el| ring.clone_el(el)).collect()));
-        let mes = ABDLOPmessage::new(&s1, &mopt);
+        let mtmp = abdlop.gen_m(m.iter().map(|el| ring.clone_el(el)).collect());
+        let mut mes = ABDLOPmessage::new(&abdlopring, Some(s1), Some(mtmp));
         let (mut com, op) = abdlop.commit(&mes);
 
-        let mext = gen_random(&ring, &mut rng, N - 15);
-        abdlop.append_commit(&mut com, &op, &mext, None);
+        let mut mext = gen_random(&ring, &mut rng, N - 15);
+        abdlop.append_commit_base(&mut com, &op, &mext, None);
 
         let mext2 = gen_random(&ring, &mut rng, N + 10);
-        abdlop.append_commit(&mut com, &op, &mext2, Some(2*N - 15));
+        abdlop.append_commit_base(&mut com, &op, &mext2, Some(2*N - 15));
 
         let mext3 = gen_random(&ring, &mut rng, 5);
-        abdlop.append_commit(&mut com, &op, &mext3, Some(l*N - 5));
+        abdlop.append_commit_base(&mut com, &op, &mext3, Some(l*N - 5));
 
-        m.extend(mext);
-        m.extend(mext2);
-        m.extend(mext3);
-        let mext = Some(abdlop.gen_m(m));
-        let mes = ABDLOPmessage::new(&s1, &mext);
+        mext.extend(mext2);
+        mext.extend(mext3);
+        let mut tmp = abdlop.gen_m(mext);
+        abdlopring.ntt_vec(&mut tmp);
+        mes.append_m(tmp);
 
         assert!(abdlop.open(&com, &mes, &op));
     }
@@ -769,13 +839,13 @@ mod tests {
 
 
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
-        let s1 = Some(abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
-                abdlop.get_bnd1().as_ref().unwrap(), m2*N)));
-        let m = Some(abdlop.gen_m(gen_random(&ring, &mut rng, l*N)));
+        let s1 = abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
+                abdlop.get_bnd1().as_ref().unwrap(), m2*N));
+        let m = abdlop.gen_m(gen_random(&ring, &mut rng, l*N));
 
         abdlop.precomp();
 
-        let mes = ABDLOPmessage::new(&s1, &m);
+        let mes = ABDLOPmessage::new(&abdlopring, Some(s1), Some(m));
         let now = std::time::SystemTime::now();
         let (com, op) = abdlop.commit(&mes);
         println!("TEST commit time: {}ms", now.elapsed().unwrap().as_millis());

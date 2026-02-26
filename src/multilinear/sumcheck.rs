@@ -1,5 +1,5 @@
-use itertools::Itertools;
 use std::cell::{Ref, RefCell};
+use itertools::Itertools;
 use tracing::instrument;
 
 use feanor_math::ring::{El, RingBase, RingStore, RingExtension};

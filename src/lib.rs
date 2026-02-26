@@ -4,6 +4,8 @@
 
 #![feature(vec_into_chunks)]
 
+#![feature(trusted_len)]
+
 #![allow(incomplete_features)]
 
 #![allow(non_upper_case_globals)]
