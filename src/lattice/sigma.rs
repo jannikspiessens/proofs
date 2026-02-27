@@ -49,7 +49,7 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
         res
     }
 
-    fn compute_h<'a>(&self, ring: &'a R, g: &El<R>, gammas: &[El<R::BaseRing>],
+    fn compute_h<'a>(&self, ring: &'a R, g: El<R>, gammas: &[El<R::BaseRing>],
         mes: &ABDLOPmessage<R,N>)
         -> (El<R>, Option<DenseMatrixMul<'a, R>>, Option<DenseMatrixMul<'a, R>>)
     {
@@ -58,9 +58,9 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
         let mut R1NTT = self.R1.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns()/N));
         let mut RmNTT = self.Rm.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns()/N + 1));
 
-        let mut h = ring.clone_el(g);
+        let mut h = g;
         
-        gammas.iter().enumerate().for_each(|(i, gamma)| {
+        gammas.into_iter().enumerate().for_each(|(i, gamma)| {
 
             if let Some(R1) = self.R1.as_ref() {
                 let R1NTTmut = R1NTT.as_mut().unwrap();
@@ -69,7 +69,7 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
                         let mut tmp = R::from_array(core::array::from_fn(|k|
                             ring.to_NTTRing_ref(R1.get(i, j*N + k))));
                         ring.ntt(&mut tmp);
-                        ring.scalar_mul_assign_ref(&mut tmp, &gamma);
+                        ring.scalar_mul_assign_ref(&mut tmp, gamma);
                         let res = ring.add(acc, ring.mul_ref(el, &tmp));
                         if i == 0 { R1NTTmut.push(tmp) }
                             else { ring.add_assign(&mut R1NTTmut[j], tmp) }
@@ -85,7 +85,7 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
                         let mut tmp = R::from_array(core::array::from_fn(|k|
                             ring.to_NTTRing_ref(Rm.get(i, j*N + k))));
                         ring.ntt(&mut tmp);
-                        ring.scalar_mul_assign_ref(&mut tmp, &gamma);
+                        ring.scalar_mul_assign_ref(&mut tmp, gamma);
                         let res = ring.add(acc, ring.mul_ref(el, &tmp));
                         if i == 0 { RmNTTmut.push(tmp) }
                             else { ring.add_assign(&mut RmNTTmut[j], tmp) }
@@ -93,7 +93,8 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
                  }));
             }
 
-            ring.sub_assign(&mut h, ring.scalar_mul(ring.from_constant(&self.u[i]), &gamma));
+            ring.sub_assign(&mut h,
+                ring.from_constant(&ring.base_ring().mul_ref(&self.u[i], gamma)));
         });
 
         RmNTT.as_mut().map(|x| x.push(ring.from_constant(&ring.base_ring().one())));
@@ -141,7 +142,8 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
                  });
             }
 
-            ring.add_assign(&mut uNTT, ring.scalar_mul(ring.from_constant(&self.u[i]), &gamma));
+            ring.add_assign(&mut uNTT,
+                ring.from_constant(&ring.base_ring().mul_ref(&self.u[i], gamma)));
         });
 
         RmNTT.as_mut().map(|x| x.push(ring.from_constant(&ring.base_ring().one())));
@@ -183,8 +185,8 @@ impl<R: RingStore> LatSigmaPrecomp<R> {
 pub struct LatSigmaProof<R, const N: usize>
     where R: ABDLOPRingTrait<N>
 {
-    gammas: Vec<El<R::BaseRing>>,
-    h: El<R>, // in NTT form
+    gammas: Option<Vec<El<R::BaseRing>>>,
+    h: Option<El<R>>, // in NTT form
     z1: Option<Vec<El<R>>>, // in coeff form!
     z2: Vec<El<R>>, // in coeff form!
     w: Vec<El<R>>, // in NTT form
@@ -241,7 +243,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         assert!(R1.is_none() || self.cs.has_ajtai());
         assert!(R1.as_ref().is_none_or(|x| x.columns() == self.cs.get_A1().unwrap().columns()*N));
         assert!(Rm.is_none() || self.cs.has_bdlop());
-        assert!(Rm.as_ref().is_none_or(|x| x.columns() == self.cs.get_B().unwrap().rows()*N));
+        assert!(Rm.as_ref().is_none_or(|x| x.columns() == (self.cs.get_B().unwrap().rows()-1)*N));
         assert!(R1.as_ref().is_none_or(|x| Rm.as_ref().is_none_or(|xx| x.rows() == xx.rows())));
 
         let mut linrelmut = self.linrel.borrow_mut();
@@ -275,22 +277,26 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         let fsclone = self.fs.borrow().clone();
         let mut rng = self.cs.rng().borrow_mut();
 
-        let mut g = self.ring().random_element(|| rng.next_u64());
-        let gcoeff = R::to_array_mut(&mut g);
-        gcoeff[0] = self.ring().NTT_ring().zero();
-        self.cs.append_commit(com, op, &[self.ring().clone_el(&g)]);
-
-        let linrel = self.linrel.borrow();
-        let gammas = {
-            let mut fsmut = self.fs.borrow_mut();
-            gen_random(self.ring().base_ring(), fsmut.get_rng(), linrel.rows())
-        };
-
-        let (h, R1NTT, RmNTT) = linrel.compute_h(self.ring(), &g, &gammas, mes);
-
         let (mut y1, mut y2, w, By2) = self.precomp.replace(LatSigmaPrecomp::empty()).into_inner();
 
-        let vneg = linrel.is_some().then(|| {
+        let linrel = self.linrel.borrow();
+        let (vneg, gh) = linrel.is_some().then(|| {
+
+            assert!(self.cs.comlen() > com.len(),
+                "LatSigma: leave space to commit to one extra ring element!");
+
+            let mut g = self.ring().random_element(|| rng.next_u64());
+            let gcoeff = R::to_array_mut(&mut g);
+            gcoeff[0] = self.ring().NTT_ring().zero();
+            self.cs.append_commit(com, op, &[self.ring().clone_el(&g)]);
+
+            let gammas = {
+                let mut fsmut = self.fs.borrow_mut();
+                gen_random(self.ring().base_ring(), fsmut.get_rng(), linrel.rows())
+            };
+
+            let (h, R1NTT, RmNTT) = linrel.compute_h(self.ring(), g, &gammas, mes);
+
             let tmpv = RmNTT.map(|x| {
                 let By2unwr = By2.as_ref().unwrap();
                 x.mul(By2unwr).pop().unwrap()
@@ -298,14 +304,16 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
             if let Some(R1NTTunwr) = R1NTT {
                 let y1unwr = y1.as_ref().unwrap();
                 let R1y1 = R1NTTunwr.mul(y1unwr).pop().unwrap();
-                tmpv.map_or(
+                let resv = tmpv.map_or(
                     self.ring().negate(self.ring().clone_el(&R1y1)),
                     |RmBy2| self.ring().sub_ref_snd(RmBy2, &R1y1)
-                )
+                );
+                (resv, (gammas, h))
             } else {
-                tmpv.unwrap()
+                (tmpv.unwrap(), (gammas, h))
             }
-        });
+        }).unzip();
+        let (gammas, h) = gh.unzip();
 
         let tmpop = op.iter().map(|el| {
             let mut tmp = self.ring().clone_el(el);
@@ -391,7 +399,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 
         let flatz2 = self.ring().to_base_ring_ref(&proof.z2);
         if norm2(basering, &intring, &flatz2) > self.get_zbound(ABDLOPparts::BDLOP) { return false }
-        
+
         let mut fs = self.fs.borrow_mut();
         let Rbnd = Zn::new(ZZbig, ZZbig.clone_el(&self.challbnd));
         let hom = basering.can_hom(&ZZbig).unwrap();
@@ -421,22 +429,25 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         let linrel = self.linrel.borrow();
         if linrel.is_some() {
 
-            let (R1NTT, RmNTT, uNTT) = linrel.to_NTTform(self.ring(), &proof.h, &proof.gammas);
+            let (R1NTT, RmNTT, uNTT) = linrel.to_NTTform(self.ring(),
+                proof.h.as_ref().unwrap(), proof.gammas.as_ref().unwrap());
 
-            let challu = ring.mul_ref_snd(uNTT, &chall);
-            let lhs = if let Some(R1) = R1NTT.as_ref() {
-                ring.add(challu, R1.mul(z1.as_ref().unwrap()).pop().unwrap())
-            } else { challu };
-
-            let lhs2 = if let Some(Rm) = RmNTT.as_ref() { 
+            let lhs1 = if let Some(Rm) = RmNTT.as_ref() {
+                ring.sub(uNTT, Rm.mul(&com[m1..]).pop().unwrap())
+            } else { uNTT };
+            
+            let lhs2 = if let Some(Rm) = RmNTT.as_ref() {
                 let Bz2iter = self.cs.get_B().unwrap().mulit(&z2);
                 let RmBz2 = Bz2iter.zip(Rm.data()).fold(ring.zero(), |acc, (l, r)|
                     ring.add(acc, ring.mul_ref_snd(l, r)));
-                let Rmt = Rm.mul(&com[m1..]).pop().unwrap();
-                ring.sub(ring.add(lhs, RmBz2), ring.mul(Rmt, chall))
-            } else { lhs };
+                ring.add(ring.mul(chall, lhs1), RmBz2)
+            } else { lhs1 };
 
-            if !ring.eq_el(&lhs2, proof.vneg.as_ref().unwrap()) { return false }
+            let lhs3 = if let Some(R1) = R1NTT.as_ref() {
+                ring.sub(lhs2, R1.mul(z1.as_ref().unwrap()).pop().unwrap())
+            } else { lhs2 };
+
+            if !ring.eq_el(&lhs3, proof.vneg.as_ref().unwrap()) { return false }
         }
         return true
     }
@@ -470,7 +481,7 @@ mod tests {
         let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
         
         let n = 2;
-        let l = 2;
+        let l = 3;
         let m2 = 1;
 
         let inthom = ZZbig.int_hom();
@@ -487,10 +498,25 @@ mod tests {
 
         // let mut rng = rand::rng();
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
-        let s1 = abdlop.gen_s1(gen_vector_infbnd(&ring, &mut rng,
-                abdlop.get_bnd1().as_ref().unwrap(), m2*N));
-        let m = abdlop.gen_m(gen_random(&ring, &mut rng, l*N));
+        let s1flat = gen_vector_infbnd(&ring, &mut rng, abdlop.get_bnd1().as_ref().unwrap(), m2*N);
+        let mflat = gen_random(&ring, &mut rng, (l-1)*N);
+        // let mflat = gen_random(&ring, &mut rng, l*N);
+
+        // NOTE: does work when setting longer mflat (see commented line above)
+        // TODO: where does verification fail when using shorter mflat?
+
+        let rows = 10;
+
+        let R1 = DenseMatrixMul::random(&ring, &mut rng, rows, s1flat.len(), "R1");
+        let Rmd = DenseMatrixMul::random(&ring, &mut rng, rows, mflat.len(), "R1");
+        let Rm = SparseMatrixMul::from(&Rmd);
+        let u = R1.mulit(&s1flat).zip(Rm.mulit(&mflat)).map(|(l,r)| ring.add(l, r)).collect_vec();
+
+        let s1 = abdlop.gen_s1(s1flat);
+        let m = abdlop.gen_m(mflat);
         let mes = ABDLOPmessage::new(&abdlopring, Some(s1), Some(m));
+
+        abdlop.precomp();
 
         let (mut com, op) = abdlop.commit(&mes);
 
@@ -508,6 +534,8 @@ mod tests {
 
         let latsigma: LatSigmaDefault<ABDLOPRing<_, N>, N>
             = LatSigma::new(abdlop, gamma, challbnd, rsmode);
+
+        // latsigma.set_linrel(Some(R1), Some(Rm), u);
 
         let proof = latsigma.prove(&mut com, &op, &mes);
 

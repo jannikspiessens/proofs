@@ -233,9 +233,9 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
         Self::from_array(core::array::from_fn(|_| self.to_NTTRing_ref(c0)))
     }
 
-    fn scalar_mul_assign_ref(&self, inp: &mut El<Self>, c: &El<Self::BaseRing>) {
+    fn scalar_mul_assign_ref(&self, inp: &mut El<Self>, scalar: &El<Self::BaseRing>) {
         Self::to_array_mut(inp).iter_mut().for_each(|el|
-            self.NTT_ring().mul_assign(el, self.to_NTTRing_ref(c)));
+            self.NTT_ring().mul_assign(el, self.to_NTTRing_ref(scalar)));
     }
 
     fn scalar_mul_ref(&self, inp: &El<Self>, scalar: &El<Self::BaseRing>) -> El<Self> {
@@ -244,7 +244,7 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
 
     fn scalar_mul(&self, inp: El<Self>, scalar: &El<Self::BaseRing>) -> El<Self> {
         Self::from_array(Self::to_array(inp).map(|el|
-            self.NTT_ring().mul(el, self.to_NTTRing(self.base_ring().clone_el(scalar))))) }
+            self.NTT_ring().mul(el, self.to_NTTRing_ref(scalar)))) }
 
     fn to_ntt_ring_ref(&self, inp: &[El<Self::BaseRing>], prefixlen: Option<usize>)
         -> Vec<El<Self>>
@@ -591,7 +591,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
             self.check_inf_norm::<true>(&tmp, self.bnd1.as_ref().unwrap())
         });
         let c2 = self.check_inf_norm::<true>(op, &self.bnd2);
-        if !(c1 && c2 && com.len() == self.comlen()) { return false };
+        if !(c1 && c2 && com.len() <= self.comlen()) { return false };
 
         let mut iter: Box<dyn Iterator<Item = El<R>>> = self.commit_ajtai(mes.s1().as_ref(), op);
         if let Some(m) = mes.m.as_ref() {
@@ -622,6 +622,8 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         let n = self.A2.rows();
         assert!(comlen >= n);
         assert!(self.has_bdlop());
+
+        assert!(self.comlen() >= comlen + m.len());
 
         let offs = comlen - n;
 
