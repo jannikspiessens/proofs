@@ -185,7 +185,6 @@ impl<R: RingStore> LatSigmaPrecomp<R> {
 pub struct LatSigmaProof<R, const N: usize>
     where R: ABDLOPRingTrait<N>
 {
-    gammas: Option<Vec<El<R::BaseRing>>>,
     h: Option<El<R>>, // in NTT form
     z1: Option<Vec<El<R>>>, // in coeff form!
     z2: Vec<El<R>>, // in coeff form!
@@ -244,7 +243,8 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         assert!(R1.as_ref().is_none_or(|x| x.columns() == self.cs.get_A1().unwrap().columns()*N));
         assert!(Rm.is_none() || self.cs.has_bdlop());
         assert!(Rm.as_ref().is_none_or(|x| x.columns() == (self.cs.get_B().unwrap().rows()-1)*N));
-        assert!(R1.as_ref().is_none_or(|x| Rm.as_ref().is_none_or(|xx| x.rows() == xx.rows())));
+        assert!(R1.as_ref().is_none_or(|x| Rm.as_ref().is_none_or(|xx| x.rows() == xx.rows()
+                    && x.rows() == u.len())));
 
         let mut linrelmut = self.linrel.borrow_mut();
         linrelmut.R1 = R1;
@@ -280,14 +280,17 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         let (mut y1, mut y2, w, By2) = self.precomp.replace(LatSigmaPrecomp::empty()).into_inner();
 
         let linrel = self.linrel.borrow();
-        let (vneg, gh) = linrel.is_some().then(|| {
+        let (vneg, h) = linrel.is_some().then(|| {
 
-            assert!(self.cs.comlen() > com.len(),
+            assert!(self.cs.comlen() == com.len() + 1,
                 "LatSigma: leave space to commit to one extra ring element!");
 
             let mut g = self.ring().random_element(|| rng.next_u64());
-            let gcoeff = R::to_array_mut(&mut g);
-            gcoeff[0] = self.ring().NTT_ring().zero();
+            {
+                let gcoeff = R::to_array_mut(&mut g);
+                gcoeff[0] = self.ring().NTT_ring().zero();
+            }
+            self.ring().ntt(&mut g);
             self.cs.append_commit(com, op, &[self.ring().clone_el(&g)]);
 
             let gammas = {
@@ -308,12 +311,11 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
                     self.ring().negate(self.ring().clone_el(&R1y1)),
                     |RmBy2| self.ring().sub_ref_snd(RmBy2, &R1y1)
                 );
-                (resv, (gammas, h))
+                (resv, h)
             } else {
-                (tmpv.unwrap(), (gammas, h))
+                (tmpv.unwrap(), h)
             }
         }).unzip();
-        let (gammas, h) = gh.unzip();
 
         let tmpop = op.iter().map(|el| {
             let mut tmp = self.ring().clone_el(el);
@@ -354,7 +356,7 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
 
         self.fs.replace(fsclone);
 
-        LatSigmaProof{ gammas, h, z1, z2: self.ring().to_ntt_ring(z2.into_iter()), w, vneg, fscnt }
+        LatSigmaProof{ h, z1, z2: self.ring().to_ntt_ring(z2.into_iter()), w, vneg, fscnt }
     }
 
     pub fn precomp(&self) {
@@ -385,8 +387,17 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
     }
 
     pub fn verify(&self, com: &ABDLOPcommitment<R,N>, proof: &LatSigmaProof<R,N>) -> bool {
-        if !(proof.z1.is_some() == self.cs.has_ajtai() && com.len() == self.cs.comlen())
-            { return false };
+        if !(proof.z1.as_ref().is_none_or(|z1| self.cs.has_ajtai()
+                && z1.len() == self.cs.get_A1().unwrap().columns())) { return false };
+        if !(proof.z2.len() == self.cs.get_A2().columns()) { return false };
+        if !(proof.w.len() == self.cs.get_A2().rows()
+            && com.len() > proof.w.len()) { return false };
+        if !(proof.fscnt > 0) { return false };
+
+        let linrel = self.linrel.borrow();
+        if !(!linrel.is_some() || (proof.vneg.is_some() &&
+            linrel.Rm.as_ref().is_none_or(|Rm| (com.len()-1)*N == proof.w.len()*N + Rm.columns())
+        )) { return false };
         
         let ring = self.ring();
         let basering = ring.base_ring();
@@ -401,6 +412,8 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         if norm2(basering, &intring, &flatz2) > self.get_zbound(ABDLOPparts::BDLOP) { return false }
 
         let mut fs = self.fs.borrow_mut();
+        let gammas = linrel.is_some().then(|| gen_random(basering, fs.get_rng(), linrel.rows()));
+
         let Rbnd = Zn::new(ZZbig, ZZbig.clone_el(&self.challbnd));
         let hom = basering.can_hom(&ZZbig).unwrap();
         let mut chall = basering.zero();
@@ -426,21 +439,20 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
             !ring.eq_el(&lhsi, &ring.add_ref_fst(wi, ring.mul_ref(&chall, ci))))
         { return false }
 
-        let linrel = self.linrel.borrow();
         if linrel.is_some() {
 
             let (R1NTT, RmNTT, uNTT) = linrel.to_NTTform(self.ring(),
-                proof.h.as_ref().unwrap(), proof.gammas.as_ref().unwrap());
-
-            let lhs1 = if let Some(Rm) = RmNTT.as_ref() {
-                ring.sub(uNTT, Rm.mul(&com[m1..]).pop().unwrap())
-            } else { uNTT };
+                proof.h.as_ref().unwrap(), gammas.as_ref().unwrap());
+            
+            let lhs1 = ring.mul(chall, if let Some(Rm) = RmNTT.as_ref() {
+                ring.sub(uNTT, Rm.mul(&com[m1..(m1+Rm.columns())]).pop().unwrap())
+            } else { uNTT });
             
             let lhs2 = if let Some(Rm) = RmNTT.as_ref() {
                 let Bz2iter = self.cs.get_B().unwrap().mulit(&z2);
-                let RmBz2 = Bz2iter.zip(Rm.data()).fold(ring.zero(), |acc, (l, r)|
-                    ring.add(acc, ring.mul_ref_snd(l, r)));
-                ring.add(ring.mul(chall, lhs1), RmBz2)
+                assert!(self.cs.get_B().unwrap().rows() == Rm.data().len());
+                Bz2iter.zip(Rm.data()).fold(lhs1, |acc, (l, r)|
+                    ring.add(acc, ring.mul_ref_snd(l, r)))
             } else { lhs1 };
 
             let lhs3 = if let Some(R1) = R1NTT.as_ref() {
@@ -487,9 +499,6 @@ mod tests {
         let inthom = ZZbig.int_hom();
         let bnd2 = inthom.map(1 << 10);
         
-        // let m1 = None;
-        // let s1 = None;
-        // let bnd1 = None;
         let m1 = Some(1);
         let bnd1 = Some(inthom.map(1 << 10));
         
@@ -500,10 +509,6 @@ mod tests {
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::from_os_rng();
         let s1flat = gen_vector_infbnd(&ring, &mut rng, abdlop.get_bnd1().as_ref().unwrap(), m2*N);
         let mflat = gen_random(&ring, &mut rng, (l-1)*N);
-        // let mflat = gen_random(&ring, &mut rng, l*N);
-
-        // NOTE: does work when setting longer mflat (see commented line above)
-        // TODO: where does verification fail when using shorter mflat?
 
         let rows = 10;
 
@@ -535,7 +540,8 @@ mod tests {
         let latsigma: LatSigmaDefault<ABDLOPRing<_, N>, N>
             = LatSigma::new(abdlop, gamma, challbnd, rsmode);
 
-        // latsigma.set_linrel(Some(R1), Some(Rm), u);
+        // latsigma.set_linrel(R1, Some(Rm), u);
+        latsigma.set_linrel(Some(R1), Some(Rm), u);
 
         let proof = latsigma.prove(&mut com, &op, &mes);
 

@@ -614,7 +614,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         }
     }
 
-    // NOTE: m is assumed to be in coefficient form
+    // NOTE: m is assumed to be in NTT form
     pub fn append_commit(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
         m: &[El<R>])
     {
@@ -627,13 +627,8 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
 
         let offs = comlen - n;
 
-        let tmp = m.iter().map(|el| {
-            let mut t = self.ring().clone_el(&el);
-            self.ring().ntt(&mut t); t
-        }).collect_vec();
-
         let precomp = self.precomp.borrow();
-        com.extend(self.append_commit_internal(op, &tmp, &precomp, offs));
+        com.extend(self.append_commit_internal(op, m, &precomp, offs));
     }
 
     // NOTE: mb elements are assumed to be coefficients 
