@@ -264,6 +264,25 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         }
     }
 
+    fn bitscom(&self) -> usize {
+        ZZbig.abs_log2_ceil(
+            &self.ring().base_ring().characteristic(ZZbig).unwrap()).unwrap()
+    }
+
+    pub fn proofsize(&self) -> usize {
+        let bitschall = ZZbig.abs_log2_ceil(self.challbnd()).unwrap();
+
+        let bitsz1 = self.cs.get_bnd1().as_ref().map_or(0, |x| ZZbig.abs_log2_ceil(x).unwrap());
+        let bitsz2 = ZZbig.abs_log2_ceil(self.cs.get_bnd2()).unwrap();
+
+        N*(self.bitscom()*2 + bitsz2*self.cs.get_A2().columns()
+            + bitsz1*self.cs.get_A1().map_or(0, |x| x.columns())) + bitschall
+    }
+
+    pub fn comsize(&self) -> usize {
+        N*self.bitscom()*(self.cs.get_A2().rows() + self.cs.get_B().map_or(0, |x| x.rows()-1))
+    }
+
     pub fn prove(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
         mes: &ABDLOPmessage<R,N>) -> LatSigmaProof<R, N>
     {
@@ -476,7 +495,6 @@ mod tests {
         lattice::gen_vector_infbnd,
         commit::abdlop::{ABDLOPRing, ABDLOPRingBase, ABDLOPmessage},
     };
-
 
     #[test]
     fn test_latsigma() {

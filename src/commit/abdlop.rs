@@ -640,7 +640,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         assert!(comlen >= n);
         assert!(self.has_bdlop());
 
-        assert!(actlen.is_none_or(|x| x < (comlen-n)*N && x > (comlen-n-1)*N ));
+        assert!(actlen.is_none_or(|x| x < (comlen-n)*N && x >= (comlen-n-1)*N ));
         assert!(self.comlen()*N >= n*N + mb.len() + actlen.unwrap_or(0));
 
         let mut m = self.ring().to_ntt_ring_ref(mb, actlen.map(|x| x % N));
@@ -660,7 +660,6 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
             self.ring().intt(&mut com[comlen-1]);
             self.ring().add_assign_ref(&mut com[comlen-1], &first);
             self.ring().ntt(&mut com[comlen-1]);
-            self.ring().ntt(&mut first);
         }
 
         com.extend(newcom);
@@ -814,7 +813,7 @@ mod tests {
 
         let p = ZZbig.get_ring().parse("864175120484581453683482079962486176185193500155369104423588921177379322250834082489183304374038697487834084609675858746433355728113743766078731283595263", 10).unwrap();
         let ring = Zn::new(ZZbig, p);
-        const N: usize = 1 << 12;
+        const N: usize = 1 << 8;
         let abdlopring = RingValue::from(ABDLOPRingExtBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
 
         let n = 2;
