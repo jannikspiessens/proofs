@@ -215,8 +215,10 @@ pub trait ABDLOPRingTrait<const N: usize>: RingStore<Type: FiniteRing> {
 
     // NOTE: weird that these methods are needed
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>>;
+    fn to_array_ref(inp: &El<Self>) -> &El<DirectPowerRing<Self::NTTRing, N>>;
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>>;
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self>;
+    fn from_array_ref(inp: &El<DirectPowerRing<Self::NTTRing, N>>) -> &El<Self>;
     fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self>;
 
     fn ntt(&self, el: &mut El<Self>) {
@@ -295,8 +297,10 @@ impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRing<R, N>
     { &self.get_ring().fft }
 
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn to_array_ref(inp: &El<Self>) -> &El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
+    fn from_array_ref(inp: &El<DirectPowerRing<Self::NTTRing, N>>) -> &El<Self> { inp }
     fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self> { inp }
 }
 
@@ -323,8 +327,10 @@ impl<R, const N: usize> ABDLOPRingTrait<N> for ABDLOPRingExt<R, N>
     { &self.get_ring().fft }
 
     fn to_array(inp: El<Self>) -> El<DirectPowerRing<Self::NTTRing, N>> { inp }
+    fn to_array_ref(inp: &El<Self>) -> &El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn to_array_mut(inp: &mut El<Self>) -> &mut El<DirectPowerRing<Self::NTTRing, N>> { inp }
     fn from_array(inp: El<DirectPowerRing<Self::NTTRing, N>>) -> El<Self> { inp }
+    fn from_array_ref(inp: &El<DirectPowerRing<Self::NTTRing, N>>) -> &El<Self> { inp }
     fn from_array_mut(inp: &mut El<DirectPowerRing<Self::NTTRing, N>>) -> &mut El<Self> { inp }
 }
 
@@ -607,7 +613,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         let bnd = hom.map_ref(bnd);
        
         inp.into_iter().all(|el| {
-            let mut tmp = self.ring().clone_el(el); // TODO: avoid this cloning here?
+            let mut tmp = self.ring().clone_el(el);
             if INTT {self.ring().intt(&mut tmp)};
             R::to_array(tmp).into_iter().all(|ell|
                 intring.is_leq(&basering.smallest_lift(self.ring().to_BaseRing(ell)), &bnd)

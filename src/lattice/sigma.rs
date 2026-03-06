@@ -16,7 +16,7 @@ use crate::{
     },
     lattice::{gen_infbnd, gen_vector_dgauss, gen_vector_latrejsampl, norm2, RejSamplModes},
     util::{
-        gen_random, FiatShamirSim,
+        gen_vector, gen_random, FiatShamirSim,
         matmul::{MatrixMul, SparseMatrixMul, DenseMatrixMul},
     }
 };
@@ -48,23 +48,63 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
         assert!(self.Rm.as_ref().is_none_or(|x| x.rows() == res));
         res
     }
+}
+
+impl<'b, R, MM1, const N: usize> LatSigmaLinRel<R, MM1, SparseMatrixMul<'b, R::BaseRing>, N>
+    where R: ABDLOPRingTrait<N>, MM1: MatrixMul<R = R::BaseRing>
+{
+    fn precompute_Rmm(&self, ring: &R, mes: &ABDLOPmessage<R,N>)
+        -> Option<(Vec<[El<R::NTTRing>; N]>, El<R>)>
+    {
+        let nttring = ring.NTT_ring();
+        self.Rm.as_ref().map(|Rm| {
+            let m = mes.m().as_ref().unwrap();
+            // NOTE: assumes last row of Rm is dense so we use NTT
+            // TODO: dynamically choose to NTT or not based on row density
+            (Rm.iter_rows().take(Rm.rows()-1).map(|Rmrow| {
+                let mut res = R::to_array(ring.zero());
+                Rmrow.into_iter().for_each(|(jp, Rmij)|
+                    R::to_array_ref(&m[jp/N]).iter().enumerate().for_each(|(j, mj)|
+                        nttring.add_assign(&mut res[(jp+j)%N],
+                            nttring.mul_ref_fst(mj, ring.to_NTTRing_ref(Rmij)))
+                    )
+                );
+                res
+            }).collect_vec(), {
+                m.iter().enumerate().fold(ring.zero(), |acc, (j, mel)| {
+                    let mut RmjNTT = R::from_array(core::array::from_fn(|k|
+                        ring.to_NTTRing_ref(Rm.get(Rm.rows()-1, j*N + k))));
+                    ring.ntt(&mut RmjNTT);
+                    let mut mNTT = ring.clone_el(mel);
+                    ring.ntt(&mut mNTT);
+                    ring.add(acc, ring.mul(mNTT, RmjNTT))
+                })
+            })
+        })
+    }
 
     fn compute_h<'a>(&self, ring: &'a R, g: El<R>, gammas: &[El<R::BaseRing>],
         mes: &ABDLOPmessage<R,N>)
         -> (El<R>, Option<DenseMatrixMul<'a, R>>, Option<DenseMatrixMul<'a, R>>)
     {
         assert!(self.rows() == gammas.len());
+        let basering = ring.base_ring();
+        let nttring = ring.NTT_ring();
 
         let mut R1NTT = self.R1.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns()/N));
-        let mut RmNTT = self.Rm.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns()/N + 1));
+        let mut RmINTT = self.Rm.as_ref().map(|x| gen_vector(|| nttring.zero(), x.columns()));
 
-        let mut h = g;
-        
+        let mut hNTT = ring.zero();
+        let mut h = R::to_array(g);
+
+        let Rmm = self.precompute_Rmm(ring, mes);
+       
         gammas.into_iter().enumerate().for_each(|(i, gamma)| {
 
+            // TODO: this is slow
             if let Some(R1) = self.R1.as_ref() {
                 let R1NTTmut = R1NTT.as_mut().unwrap();
-                ring.add_assign(&mut h,
+                ring.add_assign(&mut hNTT,
                     mes.s1().as_ref().unwrap().iter().enumerate().fold(ring.zero(), |acc, (j, el)| {
                         let mut tmp = R::from_array(core::array::from_fn(|k|
                             ring.to_NTTRing_ref(R1.get(i, j*N + k))));
@@ -78,27 +118,38 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
             }
 
             if let Some(Rm) = self.Rm.as_ref() {
-                let RmNTTmut = RmNTT.as_mut().unwrap();
-                ring.add_assign(&mut h,
-                    mes.m().as_ref().unwrap().iter().enumerate().fold(ring.zero(), |acc, (j, el)| {
-                        let mut tmp = R::from_array(core::array::from_fn(|k|
-                            ring.to_NTTRing_ref(Rm.get(i, j*N + k))));
-                        ring.ntt(&mut tmp);
-                        ring.scalar_mul_assign_ref(&mut tmp, gamma);
-                        let mut tmpel = ring.clone_el(&el);
-                        ring.ntt(&mut tmpel);
-                        // TODO: mul below will be faster over coeffs when Rm is sparse!
-                        let res = ring.add(acc, ring.mul_ref_snd(tmpel, &tmp));
-                        if i == 0 { RmNTTmut.push(tmp) }
-                            else { ring.add_assign(&mut RmNTTmut[j], tmp) }
-                        res
-                 }));
+                let RmINTTmut = RmINTT.as_mut().unwrap();
+                RmINTTmut.iter_mut().enumerate().for_each(|(j, Rmj)| {
+                    let tmp = Rm.get(i,j);
+                    if !basering.is_zero(&tmp) {
+                        nttring.add_assign(Rmj, ring.to_NTTRing(basering.mul_ref(gamma, tmp)))
+                    }
+                });
             }
 
-            ring.sub_assign(&mut h,
-                ring.from_constant(&ring.base_ring().mul_ref(&self.u[i], gamma)));
+            if let Some((Rmmrows, Rmmdense)) = Rmm.as_ref() {
+                if i != gammas.len() - 1 {
+                    (0..N).for_each(|k| nttring.add_assign(&mut h[k],
+                        nttring.mul_ref_fst(&Rmmrows[i][k], ring.to_NTTRing_ref(gamma))));
+                } else {
+                    let Rmmdensetmp = R::to_array_ref(Rmmdense);
+                    let gammatmp = ring.to_NTTRing_ref(gamma);
+                    let hNTTtmp = R::to_array_mut(&mut hNTT);
+                    hNTTtmp.iter_mut().enumerate().for_each(|(j, h)|
+                        nttring.add_assign(h, nttring.mul_ref(&gammatmp, &Rmmdensetmp[j])))
+                }
+            }
+
+            nttring.sub_assign(&mut h[0], ring.to_NTTRing(basering.mul_ref(&self.u[i], gamma)));
         });
 
+        ring.intt(&mut hNTT);
+        let h = ring.add(R::from_array(h), hNTT);
+
+        let mut RmNTT = RmINTT.map(|x| x.into_chunks::<N>().into_iter().map(|el| {
+            let mut tmp = R::from_array(el);
+            ring.ntt(&mut tmp); tmp
+        }).collect_vec());
         RmNTT.as_mut().map(|x| x.push(ring.from_constant(&ring.base_ring().one())));
 
         let R1NTT = R1NTT.map(|x| DenseMatrixMul::new(ring, x.len(), x, "R1NTT"));
@@ -107,18 +158,21 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
         (h, R1NTT, RmNTT)
     }
 
-    // TODO: remove redundancy here!
     fn to_NTTform<'a>(&self, ring: &'a R, h: &El<R>, gammas: &[El<R::BaseRing>])
         -> (Option<DenseMatrixMul<'a, R>>, Option<DenseMatrixMul<'a, R>>, El<R>)
     {
         assert!(self.rows() == gammas.len());
+        let basering = ring.base_ring();
+        let nttring = ring.NTT_ring();
 
         let mut R1NTT = self.R1.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns()));
-        let mut RmNTT = self.Rm.as_ref().map(|x| Vec::<El<R>>::with_capacity(x.columns() + 1));
-        let mut uNTT = ring.clone_el(h);
+        let mut RmINTT = self.Rm.as_ref().map(|x| gen_vector(|| nttring.zero(), x.columns()));
+        let mut u = R::to_array(ring.clone_el(h));
 
+        let Rmrowsopt = self.Rm.as_ref().map(|x| x.iter_rows().collect_vec());
         gammas.iter().enumerate().for_each(|(i, gamma)| {
 
+            // TODO: this is slow
             if let Some(R1) = self.R1.as_ref() {
                 let R1NTTmut = R1NTT.as_mut().unwrap();
                 (0..(R1.columns()/N)).for_each(|j| {
@@ -131,27 +185,29 @@ impl<R, MM1, MMm, const N: usize> LatSigmaLinRel<R, MM1, MMm, N>
                  });
             }
 
-            // TODO: remove redundancy here!
-            if let Some(Rm) = self.Rm.as_ref() {
-                let RmNTTmut = RmNTT.as_mut().unwrap();
-                (0..(Rm.columns()/N)).for_each(|j| {
-                    let mut tmp = R::from_array(core::array::from_fn(|k|
-                        ring.to_NTTRing_ref(Rm.get(i, j*N + k))));
-                    ring.ntt(&mut tmp);
-                    ring.scalar_mul_assign_ref(&mut tmp, &gamma);
-                    if i == 0 { RmNTTmut.push(tmp) }
-                        else { ring.add_assign(&mut RmNTTmut[j], tmp) }
-                 });
+            if let Some(Rmrows) = Rmrowsopt.as_ref() {
+                let RmINTTmut = RmINTT.as_mut().unwrap();
+                let gammatmp = ring.to_NTTRing_ref(gamma);
+                Rmrows[i].iter().for_each(|(j, Rmij)|
+                    nttring.add_assign(&mut RmINTTmut[*j],
+                        nttring.mul_ref_fst(&gammatmp, ring.to_NTTRing_ref(Rmij)))
+                )
             }
 
-            ring.add_assign(&mut uNTT,
-                ring.from_constant(&ring.base_ring().mul_ref(&self.u[i], gamma)));
+            nttring.add_assign(&mut u[0], ring.to_NTTRing(basering.mul_ref(&self.u[i], gamma)));
         });
 
+
+        let mut RmNTT = RmINTT.map(|x| x.into_chunks::<N>().into_iter().map(|el| {
+            let mut tmp = R::from_array(el);
+            ring.ntt(&mut tmp); tmp
+        }).collect_vec());
         RmNTT.as_mut().map(|x| x.push(ring.from_constant(&ring.base_ring().one())));
 
         let R1NTT = R1NTT.map(|x| DenseMatrixMul::new(ring, x.len(), x, "R1NTT"));
         let RmNTT = RmNTT.map(|x| DenseMatrixMul::new(ring, x.len(), x, "RmNTT"));
+        let mut uNTT = R::from_array(u);
+        ring.ntt(&mut uNTT);
 
         (R1NTT, RmNTT, uNTT)
     }
@@ -187,9 +243,9 @@ impl<R: RingStore> LatSigmaPrecomp<R> {
 pub struct LatSigmaProof<R, const N: usize>
     where R: ABDLOPRingTrait<N>
 {
-    h: Option<El<R>>, // in NTT form
-    z1: Option<Vec<El<R>>>, // in coeff form!
-    z2: Vec<El<R>>, // in coeff form!
+    h: Option<El<R>>, // in coeff form
+    z1: Option<Vec<El<R>>>, // in coeff form
+    z2: Vec<El<R>>, // in coeff form
     w: Vec<El<R>>, // in NTT form
     vneg: Option<El<R>>, // in NTT form
     fscnt: usize
@@ -311,7 +367,11 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
         };
         self.precomp.replace(LatSigmaPrecomp { y1, y2, w, By2 });
     }
+}
 
+impl<'a, R, MM1, const N: usize> LatSigma<'a, R, MM1, SparseMatrixMul<'a, R::BaseRing>, N>
+    where R: ABDLOPRingTrait<N>, MM1: MatrixMul<R = R::BaseRing>
+{
     pub fn prove(&self, com: &mut ABDLOPcommitment<R,N>, op: &ABDLOPopening<R,N>,
         mes: &ABDLOPmessage<R,N>) -> LatSigmaProof<R, N>
     {
@@ -348,7 +408,6 @@ impl<'a, R, MM1, MMm, const N: usize> LatSigma<'a, R, MM1, MMm, N>
             };
 
             println!("LatSigma:   Computing h...");
-            self.ring().ntt(&mut g);
             let (h, R1NTT, RmNTT) = linrel.compute_h(self.ring(), g, &gammas, mes);
 
             println!("LatSigma:   Computing v...");
@@ -523,7 +582,7 @@ mod tests {
         let abdlopring = RingValue::from(ABDLOPRingBase::<_, N>::new_promise_is_perfect_field(ring.clone()));
         
         let n = 2;
-        let l = 3;
+        let l = 8;
         let m2 = 1;
 
         let inthom = ZZbig.int_hom();
@@ -574,7 +633,9 @@ mod tests {
 
         latsigma.precomp();
 
+        let now = std::time::SystemTime::now();
         let proof = latsigma.prove(&mut com, &op, &mes);
+        println!("TEST prover time: {}ms", now.elapsed().unwrap().as_millis());
 
         assert!(latsigma.verify(&com, &proof));
     }
