@@ -430,13 +430,17 @@ impl<R, const N: usize> ABDLOPprecomp<R,N>
         }
     }
 
-    fn is_some(&self) -> bool {
+    fn is_some_Bs2(&self) -> bool {
         self.Bs2.is_some()
+    }
+
+    fn is_some_s2(&self) -> bool {
+        self.s2.borrow().len() > 0
     }
 
     fn get_ref(&self) -> (ABDLOPopening<R,N>, Vec<El<R>>, &Option<Vec<El<R>>>)
     {
-        assert!(self.is_some());
+        assert!(self.is_some_s2());
         let s2 = self.s2.replace(ABDLOPopening{s2: Vec::new() });
         let A2s2 = self.A2s2.replace(Vec::new());
         (s2, A2s2, &self.Bs2)
@@ -533,11 +537,15 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         self.precomp.replace(ABDLOPprecomp{ s2: RefCell::new(s2), A2s2: RefCell::new(A2s2), Bs2 });
     }
 
+    pub fn wipe_precomp(&self) {
+        self.precomp.replace(ABDLOPprecomp::empty());
+    }
+
     fn commit_precomp(&self, mes: &ABDLOPmessage<R,N>)
         -> (ABDLOPcommitment<R,N>, ABDLOPopening<R,N>)
     {
         let precomp = self.precomp.borrow();
-        if !precomp.is_some() {
+        if !precomp.is_some_s2() {
             panic!("Call ABDLOP::precomp before calling ABDLOP::commit_precomp!");
         }
         let (s2, A2s2, Bs2) = precomp.get_ref();
@@ -590,7 +598,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
     {
         assert!(!self.has_ajtai() || mes.s1.is_some());
 
-        if self.precomp.borrow().is_some() {
+        if self.precomp.borrow().is_some_s2() {
             return self.commit_precomp(mes)
         } else {
             println!("ABDLOP: call precomp first for faster committing!");
@@ -645,7 +653,7 @@ impl<'a, R, const N: usize> ABDLOP<'a, R, N>
         precomp: &'b ABDLOPprecomp<R, N>, offs: usize)
         -> Box<dyn Iterator<Item = El<R>> + 'b>
     {
-        if precomp.is_some() {
+        if precomp.is_some_Bs2() {
             Box::new(precomp.Bs2.as_ref().unwrap()[offs..offs+m.len()].iter().zip(m)
                 .map(|(l,r)| self.ring.add_ref(l, r)))
         } else {
