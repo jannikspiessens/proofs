@@ -185,6 +185,10 @@ impl<'a, R: RingStore> DenseMatrixMul<'a, R> {
             desc: desc.to_string()
         }
     }
+    
+    pub fn data(&self) -> &Vec<El<R>> {
+        &self.data
+    }
 }
 
 impl<'a, Rg: RingStore> Clone for DenseMatrixMul<'a, Rg> {

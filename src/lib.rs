@@ -5,6 +5,7 @@
 #![allow(incomplete_features)]
 
 #![allow(non_snake_case)]
+#![allow(non_camel_case_types)]
 
 pub mod util;
 
@@ -19,4 +20,6 @@ pub mod spartan;
 pub mod r1cs;
 
 pub mod matmul;
+
+pub mod vpir;
 

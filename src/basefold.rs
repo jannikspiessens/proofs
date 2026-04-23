@@ -112,6 +112,7 @@ impl<'a, R> BaseFoldPCS<'a, R, RSFoldableCode<'a, R>>
     pub fn new(field: &'a R, varcount: usize, k0: usize, c: usize, ver_rep: usize) -> Self
     {
         assert!(k0.is_power_of_two());
+        assert!((1 << varcount) >= k0);
 
         let code = RSFoldableCode::new(field, k0, c,
             varcount - (k0.ilog2() as usize));
