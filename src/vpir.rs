@@ -86,14 +86,15 @@ impl<'a, R> vPIRPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<
         let bits = ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
         return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)
     }
-
-    pub fn matrix(&self) -> &DenseMatrixMul<'a, AsField<R>> {
-        &self.M
-    }
 }
     
 impl<'a, PCS: MultilinearPCS> vPIRPIOP<'a, PCS>
 {
+
+    pub fn matrix(&self) -> &DenseMatrixMul<'a, CoeffRing<PCS::Poly>> {
+        &self.M
+    }
+
     pub fn field(&self) -> &CoeffRing<PCS::Poly> {
         self.pcs.coeffring()
     }
@@ -216,7 +217,6 @@ pub struct vPIRLincheck<'a, PCS: MultilinearPCS>
 impl<'a, PCS> vPIRLincheck<'a, PCS>
     where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field>
 {
-
     pub fn for_piop(piop: vPIRPIOP<'a, PCS>) -> Self
     {
         let field = piop.field();
@@ -226,9 +226,9 @@ impl<'a, PCS> vPIRLincheck<'a, PCS>
         let eqevals = MultilinearBasisEvals::new(field, &piop.tau);
         
         M.data().chunks_exact(M.columns()).zip(eqevals).for_each(|(Mrow, eqi)|
-            Mrow.iter().zip(tauM.iter_mut()).for_each(|(Mj, rj)| {
-                field.add_assign(rj, field.mul_ref_fst(Mj, field.clone_el(&eqi)));
-            })
+            Mrow.iter().zip(tauM.iter_mut()).for_each(|(Mj, rj)|
+                field.add_assign(rj, field.mul_ref_fst(Mj, field.clone_el(&eqi)))
+            )
         );
 
         let wsM = RefCell::new(tauM);

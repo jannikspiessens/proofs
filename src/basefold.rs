@@ -19,7 +19,7 @@ use feanor_math::rings::poly::{
 use crate::util::{CoeffRing, Coeff, FiatShamirSim};
 use crate::codes::{
     LinearCode,
-    foldablecodes::{FoldableCode, RSFoldableCode}
+    foldablecodes::{FoldableCode, RSFoldableCode, DFC}
 };
 use crate::multilinear::{
     MultilinearBasis, get_hypercube_coeffs,
@@ -30,6 +30,10 @@ use crate::multilinear::{
         SCMultilinearIterator
     }
 };
+
+
+// Default
+pub type DPCS<'a, F> = BaseFoldPCS<'a, F, DFC<'a, F>>;
 
 
 pub trait Proof {}

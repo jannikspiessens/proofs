@@ -8,6 +8,8 @@ use crate::matmul::MatrixMul;
 use crate::util::gen_vector;
 use crate::codes::{LinearCode, RScode};
 
+// Default
+pub type DFC<'a, F> = RSFoldableCode<'a, F>;
 
 pub trait FoldableCode {
 
