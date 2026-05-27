@@ -4,8 +4,7 @@ use feanor_math::algorithms::linsolve::LinSolveRing;
 use feanor_math::ring::{RingStore, El};
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
-use crate::util::matmul::MatrixMul;
-use crate::util::gen_vector;
+use crate::util::{gen_vector, matmul::MatrixMul};
 use crate::codes::{LinearCode, RScode};
 
 // Default
@@ -79,7 +78,7 @@ pub trait FoldableCode {
 
 pub struct RSFoldableCode<'a, R: RingStore<Type: LinSolveRing>> {
     G0code: RScode<'a, R>,
-    d: usize,
+    d: Option<usize>,
     t: Vec<Vec<El<R>>>
 }
 
@@ -87,10 +86,22 @@ impl<'a, R> RSFoldableCode<'a, R>
     where R: RingStore<Type: LinSolveRing + FiniteRing>
 {
     #[instrument(skip_all)]
-    pub fn new(ring: &'a R, k0: usize, c: usize, d: usize) -> Self {
+    pub fn new(ring: &'a R, k0: usize, c: usize, d: Option<usize>) -> Self {
 
         let G0code = RScode::new(ring, k0, k0*c);
 
+        let t = if let Some(d) = d {
+            Self::construct_t(d, &G0code)
+        } else { Vec::new() };
+
+        Self {
+            G0code,
+            d,
+            t
+        }
+    }
+
+    pub fn construct_t(d: usize, G0code: &RScode<'a, R>) -> Vec<Vec<El<R>>> {
         let mut t: Vec<Vec<El<R>>> = Vec::with_capacity(d);
         (0..d).for_each(|dind| t.push(gen_vector::<El<R>>(|| {
                 let mut el = G0code.ring().random_element(rand::random::<u64>);
@@ -100,12 +111,7 @@ impl<'a, R> RSFoldableCode<'a, R>
                 el
             }, G0code.generator().rows()*(1 << dind))
         ));
-
-        Self {
-            G0code,
-            d,
-            t
-        }
+        t
     }
 }
 
@@ -121,7 +127,7 @@ impl<'a, R> RSFoldableCode<'a, R>
 
         Self {
             G0code,
-            d,
+            d: Some(d),
             t
         }
     }
@@ -137,7 +143,7 @@ impl<'a, Rg: RingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, 
     }
 
     fn d(&self) -> usize {
-        self.d
+        self.d.unwrap()
     }
 
     fn k0(&self) -> usize {
@@ -162,26 +168,25 @@ impl<'a, Rg: RingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, 
 mod tests {
     use super::*;
     use feanor_math::ring::RingBase;
-    use feanor_math::rings::field::AsField;
     use feanor_math::rings::zn::ZnRingStore;
     use feanor_math::rings::zn::zn_64::Zn;
     use feanor_math::field::FieldStore;
+
+    use crate::util::gen_random;
 
     #[test]
     fn test_myfoldablecode_basics() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let k0 = 5;
         let c = 2;
         let d = 1; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
 
-        let mut input = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), mfc.k(0));
-        let input1 = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), mfc.k(0));
+        let mut input = gen_random(&field, &mut rng, mfc.k(0));
+        let input1 = gen_random(&field, &mut rng, mfc.k(0));
 
         input.extend(input1);
 
@@ -202,20 +207,18 @@ mod tests {
     fn test_myfoldablecode_linearity() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let k0 = 5;
         let c = 2;
         let d = 2; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
         let t = mfc.t(d-1).collect::<Vec<_>>();
 
-        let mut inp1 = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), mfc.k(d-1));
+        let mut inp1 = gen_random(&field, &mut rng, mfc.k(d-1));
         let code1 = mfc.encode(&inp1);
 
-        let inp2 = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), mfc.k(d-1));
+        let inp2 = gen_random(&field, &mut rng, mfc.k(d-1));
         let code2 = mfc.encode(&inp2);
 
         inp1.extend(inp2);
@@ -232,15 +235,14 @@ mod tests {
     fn test_myfoldablecode_foldability() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let k0 = 5;
         let c = 2;
         let d = 2; 
-        let mfc = RSFoldableCode::new(&field, k0, c, d);
+        let mfc = RSFoldableCode::new(&field, k0, c, Some(d));
 
-        let inp = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), mfc.k(d));
+        let inp = gen_random(&field, &mut rng, mfc.k(d));
 
         let code = mfc.encode(&inp);
 

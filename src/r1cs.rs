@@ -1,4 +1,5 @@
-use itertools::Itertools;
+use itertools::{izip, Itertools};
+use rand::Rng;
 
 use feanor_math::field::{Field, FieldStore};
 use feanor_math::ring::{RingStore, El};
@@ -14,7 +15,7 @@ pub struct R1CSMatrix<'a, R: RingStore> {
     mm: SparseMatrixMul<'a, R>
 }
 
-impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
+impl<'a, R: RingStore> R1CSMatrix<'a, R>
 {
     pub fn new(mm: SparseMatrixMul<'a, R>) -> Self {
         assert!(mm.rows().is_power_of_two());
@@ -25,6 +26,23 @@ impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
         }
     }
 
+    pub fn matrix(&self) -> &SparseMatrixMul<'a, R> {
+        &self.mm
+    }
+
+    pub fn mul(&self, rhs: &[El<R>]) -> Vec<El<R>> {
+        self.mm.mul(rhs)
+    }
+
+    fn mulit(&self, rhs: &[El<R>]) -> impl Iterator<Item = El<R>> {
+        self.mm.mulit(rhs)
+    }
+
+    pub fn rowlogsize(&self) -> usize { self.rowlogsize }
+}
+
+impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
+{
     // this is O(NlogN) since we compute each evaluation of eq from scratch
     // next algorithm is O(N) by using the streaming algorithm to compute the eq evaluations
     pub fn evaluate_rowvars_slow(&self, at: &[El<R>]) -> Vec<Vec<El<R>>> {
@@ -63,12 +81,6 @@ impl<'a, R: RingStore<Type: Field>> R1CSMatrix<'a, R>
         ));
         res
     }
-
-    pub fn mul(&self, rhs: &[El<R>]) -> Vec<El<R>> {
-        self.mm.mul(rhs)
-    }
-
-    pub fn rowlogsize(&self) -> usize { self.rowlogsize }
 }
 
 pub struct R1CS<'a, R: RingStore> {
@@ -77,7 +89,7 @@ pub struct R1CS<'a, R: RingStore> {
     pub C: R1CSMatrix<'a, R>
 }
 
-impl<'a, R: RingStore<Type: Field>> R1CS<'a, R>
+impl<'a, R: RingStore> R1CS<'a, R>
 {
     pub fn new(A: SparseMatrixMul<'a, R>, B: SparseMatrixMul<'a, R>,
         C: SparseMatrixMul<'a, R>) -> Self {
@@ -87,6 +99,22 @@ impl<'a, R: RingStore<Type: Field>> R1CS<'a, R>
              C: R1CSMatrix::new(C)
         }
     }
+
+    pub fn satisfies(&self, z: &[El<R>]) -> bool {
+        let ring = self.A.mm.ring();
+        // izip!(self.A.mulit(z), self.B.mulit(z), self.C.mulit(z)).all(|(ai, bi, ci)|
+        //     ring.eq_el(&ring.mul(ai, bi), &ci))
+        izip!(self.A.mulit(z), self.B.mulit(z), self.C.mulit(z)).enumerate()
+        .all(|(i, (ai, bi, ci))| {
+            let res = ring.eq_el(&ring.mul_ref(&ai, &bi), &ci);
+            if !res {
+                println!("R1CS row {i} is not satisfied!");
+                println!("ai: {}, bi: {}, ci: {}",
+                    ring.format(&ai), ring.format(&bi), ring.format(&ci))
+            };
+            res
+        })
+    }
 }
 
 impl<'a, F> R1CS<'a, F>
@@ -94,13 +122,13 @@ impl<'a, F> R1CS<'a, F>
 {
     // Generates random R1CS instances such that z is a valid transcript
     // we assume that the input vectors are ordered from lsb to msb
-    pub fn random_from(field: &'a F, z: &[El<F>], rowlen: usize)
+    pub fn random_from<RNG: Rng>(field: &'a F, mut rng: RNG, z: &[El<F>], rowlen: usize)
         -> (Self, Vec<El<F>>, Vec<El<F>>, Vec<El<F>>)
     {
         debug_assert!(!z.iter().all(|zi| field.is_zero(zi)));
         let N = z.len();
-        let A = SparseMatrixMul::random(field, rowlen, N, 3, "A");
-        let B = SparseMatrixMul::random(field, rowlen, N, 3, "B");
+        let A = SparseMatrixMul::random(field, &mut rng, rowlen, N, 3, "A");
+        let B = SparseMatrixMul::random(field, &mut rng, rowlen, N, 3, "B");
         let zA = A.mul(&z);
         let zB = B.mul(&z);
         let zC: Vec<_> = zA.iter().zip(zB.iter()).map(|(zAi, zBi)|

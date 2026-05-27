@@ -80,6 +80,7 @@ impl<'a, R: RingStore> MultilinearBasis<'a, R> {
         res
     }
 
+    // TODO: this could be faster
     pub fn evaluate(&self, at: &[El<R>]) -> El<R> {
         debug_assert!(self.z.len() == at.len());
         self.z.iter().zip(at).fold(self.ring.one(), |acc, (zi, ri)|
@@ -174,11 +175,13 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
     type Item = El<F>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let field = self.mb.ring;
         if self.ind < ((1 << self.mb.z.len()) - 1) {
-            let field = self.mb.ring;
             let res = field.clone_el(&self.cur);
 
             self.ind += 1;
+            // TODO: use bits instead of bits_from_int here
+            // store bit repr of ind istead
             let j = bits_from_int(self.ind, self.mb.z.len()).position(|b| b == 1).unwrap();
             let mut scalar = field.div(&self.mb.z[j], &field.sub_ref_snd(field.one(), &self.mb.z[j]));
             if j > 0 {
@@ -191,21 +194,35 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
             Some(res)
         } else if self.ind == ((1 << self.mb.z.len()) - 1) {
             self.ind += 1;
-            Some(self.mb.ring.clone_el(&self.cur))
+            Some(field.clone_el(&self.cur))
         } else {
             None
         }
     }
 }
 
-
-pub fn evaluate_at_fromevals<F>(field: &F, at: &[El<F>], evals: &[El<F>]) -> El<F>
+// TODO: remove redundancy in following functions
+pub fn evaluate_at_fromevals<F>(field: &F, logsize: usize, at: &[El<F>], evals: &[El<F>])
+    -> Vec<El<F>>
     where F: FieldStore<Type: Field>
 {
-    assert!(evals.len() == 1 << at.len());
-    let eq = MultilinearBasisEvals::new(field, at);
-    evals.iter().zip(eq).fold(field.zero(), |acc, (ei, eqi)|
-        field.add(acc, field.mul_ref_fst(ei, eqi)))
+    assert!(logsize > 0);
+    assert!(1 << logsize == evals.len());
+    // if evals.len() > 1 << at.len() then we evaluate the last at.len() variables
+    assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
+
+    let reslen = 1 << (logsize - at.len());
+    let mut res = Vec::with_capacity(reslen);
+    let mut eq = MultilinearBasisEvals::new(field, at);
+    let first = eq.next().unwrap();
+
+    let (firstchunk, rest) = evals.split_at(reslen);
+    firstchunk.iter().for_each(|evalj| res.push(field.mul_ref(&evalj, &first)));
+    rest.chunks_exact(reslen).zip(eq).for_each(|(evalchunk, eqi)|
+        res.iter_mut().zip(evalchunk).for_each(|(rsj, chunkj)|
+            field.add_assign(rsj, field.mul_ref(chunkj, &eqi))));
+    res
 }
 
 #[instrument(skip_all)]
@@ -213,10 +230,11 @@ pub fn evaluate_at_fromevals_inplace<F>(field: &F, logsize: usize, at: &[El<F>],
     where F: FieldStore<Type: Field>
 {
     assert!(logsize > 0);
-    assert!(at.len() > 0);
     assert!(1 << logsize == evals.len());
     // if evals.len() > 1 << at.len() then we evaluate the last at.len() variables
-    assert!(evals.len() >= (1 << at.len()));
+    assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
+
     let reslen = 1 << (logsize - at.len());
     let mut eq = MultilinearBasisEvals::new(field, at);
     let first = eq.next().unwrap();
@@ -228,6 +246,7 @@ pub fn evaluate_at_fromevals_inplace<F>(field: &F, logsize: usize, at: &[El<F>],
 }
 
 
+// TODO: remove, not used anymore
 pub fn evaluate_at_fromcoeff<R>(ring: &R, logsize: usize, at: &[El<R>], coeff: &[El<R>]) -> Vec<El<R>>
     where R: RingStore
 {
@@ -235,6 +254,7 @@ pub fn evaluate_at_fromcoeff<R>(ring: &R, logsize: usize, at: &[El<R>], coeff: &
     assert!(1 << logsize == coeff.len());
     // if size != 1 << at.len() then we evaluate the last at.len() variables
     assert!(at.len() <= logsize);
+    assert!(at.len() > 0);
     
     let reslen = 1 << (logsize - at.len());
     let mut res = gen_vector::<El<R>>(|| ring.zero(), reslen);
@@ -269,7 +289,7 @@ pub fn sum_over_hypercube_withscalars<'a, R, I, J>(ring: &'a R, scalars: I, coef
 }
 
 
-// helper for sum_over_hypercube_fromcoeff_withscalars
+// helper for sum_over_hypercube_withscalars
 pub fn evalscalars_to_coeffscalars<'a, R>(ring: &'a R, logsize: usize, scalars: &mut [El<R>])
     where R: RingStore
 {
@@ -285,6 +305,7 @@ pub fn evalscalars_to_coeffscalars<'a, R>(ring: &'a R, logsize: usize, scalars: 
 }
 
 
+// TODO: make ref versions of these?
 pub fn coeffs_to_evals_inplace<R: RingStore>(ring: &R, logsize: usize, coeffs: &mut [El<R>]) {
     debug_assert!(coeffs.len() == 1 << logsize);
     (1..=logsize).for_each(|i| {
@@ -339,24 +360,21 @@ mod tests {
     use super::*;
     use feanor_math::rings::zn::ZnRingStore;
     use feanor_math::rings::zn::zn_64::Zn;
-    use feanor_math::rings::field::AsField;
     use feanor_math::assert_el_eq;
-    use feanor_math::rings::finite::FiniteRingStore;
     use feanor_math::rings::multivariate::multivariate_impl::MultivariatePolyRingImpl;
 
-    use crate::util::gen_vector;
+    use crate::util::gen_random;
 
     #[test]
     fn test_hypercube_coeffs() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let N = 5;
         let polyring = MultivariatePolyRingImpl::new(field.clone(), N);
 
-        let randomcoeffs = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), 1 << N);
+        let randomcoeffs = gen_random(&field, &mut rng, 1 << N);
         let poly = from_hypercube_coeffs(&polyring, &randomcoeffs);
 
         let mut coeffs = get_hypercube_coeffs(&polyring, &poly, N);
@@ -379,19 +397,18 @@ mod tests {
     fn test_hypercube_folding() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let N = 7;
         let polyring = MultivariatePolyRingImpl::new(field.clone(), N);
 
-        let randomcoeffs = gen_vector::<El<Field>>(||
-            field.random_element(rand::random::<u64>), 1 << N);
+        let randomcoeffs = gen_random(&field, &mut rng, 1 << N);
         let poly = from_hypercube_coeffs(&polyring, &randomcoeffs);
         let evals = (0..(1 << N)).map(|j| polyring.evaluate(&poly,
             (0..N).map_fn(|n| field.int_hom().map(((j >> n) & 1) as i32)),
             field.identity())).collect::<Vec<_>>();
     
-        let rs = gen_vector::<El<Field>>(|| field.random_element(rand::random::<u64>), N);
+        let rs = gen_random(&field, &mut rng, N);
 
         let mut foldedpoly = polyring.clone_el(&poly);
         assert!((0..N).rev().all(|i| {
@@ -421,7 +438,7 @@ mod tests {
     fn test_multilinear_basis() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let N = 5;
         let polyring = MultivariatePolyRingImpl::new(field.clone(), N);
@@ -442,7 +459,7 @@ mod tests {
 
         assert!(polyring.appearing_indeterminates(&eq).into_iter().all(|(_, exp)| exp == 1));
 
-        let randpoint = gen_vector::<El<Field>>(|| field.random_element(rand::random::<u64>), N);
+        let randpoint = gen_random(&field, &mut rng, N);
         assert_el_eq!(field,
             polyring.evaluate(&eq, (0..randpoint.len()).map_fn(|i| randpoint[i]), field.identity()),
             mb.evaluate(&randpoint)
@@ -453,12 +470,12 @@ mod tests {
     fn test_multilinear_basis_evals() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
-        pub type Field = AsField<Zn>;
+        let mut rng = rand::rng();
 
         let N = 5;
         let polyring = MultivariatePolyRingImpl::new(field.clone(), N);
 
-        let z = gen_vector::<El<Field>>(|| field.random_element(rand::random::<u64>), N);
+        let z = gen_random(&field, &mut rng, N);
 
         let mb = MultilinearBasis::new(&field, &z);
         let eq = mb.polynomial(&polyring);
