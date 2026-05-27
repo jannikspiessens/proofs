@@ -21,5 +21,5 @@ pub mod r1cs;
 
 pub mod matmul;
 
-pub mod vpir;
+pub mod vMM;
 

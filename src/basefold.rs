@@ -63,7 +63,7 @@ pub trait MultilinearPCS {
     fn eval(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &El<Self::Poly>) -> Self::P;
 
-    fn verify(&self, com: Self::C, z: &[Coeff<Self::Poly>],
+    fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool;
 
     fn eval_fast(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
@@ -263,7 +263,7 @@ impl<'a, C, R> MultilinearPCS for BaseFoldPCS<'a, R, C>
         }
     }
 
-    fn verify(&self, com: Self::C, z: &[Coeff<Self::Poly>],
+    fn verify(&self, com: &Self::C, z: &[Coeff<Self::Poly>],
         y: Coeff<Self::Poly>, poly: &[Coeff<Self::Poly>], proof: Self::P) -> bool
     {
 
@@ -549,7 +549,7 @@ mod tests {
         let zvec: Vec<_> = z.into_iter().collect();
         let proof = bf.eval(&com, &zvec, field.clone_el(&y), &poly);
 
-        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof))
+        assert!(bf.verify(&com, &zvec, y, &randomcoeffs, proof))
     }
 
     #[test]
@@ -638,7 +638,7 @@ mod tests {
         let zvec: Vec<_> = z.into_iter().collect();
         let proof = bf.eval_fast(&com, &zvec, y, &randomcoeffs);
 
-        assert!(bf.verify(com, &zvec, y, &randomcoeffs, proof))
+        assert!(bf.verify(&com, &zvec, y, &randomcoeffs, proof))
     }
 
 }

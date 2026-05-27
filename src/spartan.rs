@@ -384,7 +384,7 @@ impl<'a, PCS> Sumcheck<2, 2> for SpartanLincheck<'a, PCS>
         let proof = self.base.piop.pcs.eval_fast(&self.base.piop.com, &rX,
             ring.clone_el(&y), &self.base.piop.zcoeff);
         let clonedy = ring.clone_el(&y);
-        self.base.piop.pcs.verify(self.base.piop.com, &rX, clonedy, &self.base.piop.zcoeff, proof)
+        self.base.piop.pcs.verify(&self.base.piop.com, &rX, clonedy, &self.base.piop.zcoeff, proof)
     }
 }
 

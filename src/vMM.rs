@@ -18,42 +18,40 @@ use crate::{
     multilinear::{
         sumcheck::{Sumcheck, SumcheckBase},
         MultilinearBasisEvals,
-        evals_to_coeffs_inplace, evaluate_at_fromcoeff,
+        evals_to_coeffs_inplace,
         evaluate_at_fromevals
     },
     matmul::{MatrixMul, DenseMatrixMul}
 };
 
-pub struct vPIRPIOP<'a, PCS: MultilinearPCS>
+pub struct vMMPIOP<'a, PCS: MultilinearPCS>
 {
     vc_rows: usize,
     vc_cols: usize,
     tau: Vec<Coeff<PCS::Poly>>,
+    zcopy: Vec<Coeff<PCS::Poly>>,
     z: RefCell<Vec<Coeff<PCS::Poly>>>,
     M: DenseMatrixMul<'a, CoeffRing<PCS::Poly>>,
     pcs: PCS,
-    zcoeff: Vec<Coeff<PCS::Poly>>,
-    com: PCS::C,
+    Mcom: <PCS as MultilinearPCS>::C,
+    Mcoeff: Vec<Coeff<PCS::Poly>>,
     zMtau: Coeff<PCS::Poly>
 }
 
-impl<'a, R> vPIRPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
+impl<'a, R> vMMPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
     where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
 {
-    pub fn new_extra(field: &'a AsField<R>, z: Vec<El<AsField<R>>>, zM: Vec<El<AsField<R>>>, M: DenseMatrixMul<'a, AsField<R>>, ver_rep: usize)
+    pub fn new_extra(field: &'a AsField<R>, z: Vec<El<AsField<R>>>, zM: Vec<El<AsField<R>>>, M: DenseMatrixMul<'a, AsField<R>>, k0: usize, c: usize, ver_rep: usize)
         -> Self
     {
         assert!(z.len().is_power_of_two());
         let vc_cols = z.len().ilog2() as usize;
-        let mut zcoeff = z.iter().map(|el| field.clone_el(el)).collect_vec();
-        evals_to_coeffs_inplace(field, vc_cols, &mut zcoeff);
-        // TODO: set reasonable parameters here
-        let k0 = 1;
-        let c = 8;
-        let pcs = BaseFoldPCS::new(field, vc_cols, k0, c, ver_rep);
-        let com = pcs.commit(&zcoeff);
+        let vc_rows = zM.len().ilog2() as usize;
+        let pcs = BaseFoldPCS::new(field, vc_cols + vc_rows, k0, c, ver_rep);
 
-        let vc_rows = M.rows().ilog2() as usize;
+        let mut Mcoeff = M.data().iter().map(|el| field.clone_el(el)).collect_vec();
+        evals_to_coeffs_inplace(field, vc_cols + vc_rows, &mut Mcoeff);
+        let Mcom = pcs.commit(&Mcoeff);
 
         let tau = (0..vc_rows).map(|_| pcs.get_challenge()).collect_vec();
 
@@ -63,32 +61,32 @@ impl<'a, R> vPIRPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<
             vc_rows,
             vc_cols,
             tau,
+            zcopy: z.iter().map(|el| field.clone_el(el)).collect(),
             z: RefCell::new(z),
             M,
             pcs,
-            zcoeff,
-            com,
+            Mcom,
+            Mcoeff,
             zMtau
         }
     }
 
     pub fn new(ring: &'a AsField<R>, z: Vec<El<AsField<R>>>, M: DenseMatrixMul<'a, AsField<R>>,
-        ver_rep: usize) -> Self
+        k0: usize, c: usize, ver_rep: usize) -> Self
     {
         let zM = M.mul(&z);
-        vPIRPIOP::new_extra(ring, z, zM, M, ver_rep)
+        vMMPIOP::new_extra(ring, z, zM, M, k0, c, ver_rep)
     }
 
     pub fn proofsize(&self) -> usize {
-        let rowchecksize = 4*self.vc_rows;
         let linchecksize = 3*self.vc_cols;
         let ZZbig: BigIntRing = BigIntRing::RING;
         let bits = ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
-        return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)
+        return self.pcs.proofsize() + bits*linchecksize
     }
 }
     
-impl<'a, PCS: MultilinearPCS> vPIRPIOP<'a, PCS>
+impl<'a, PCS: MultilinearPCS> vMMPIOP<'a, PCS>
 {
 
     pub fn matrix(&self) -> &DenseMatrixMul<'a, CoeffRing<PCS::Poly>> {
@@ -115,23 +113,33 @@ impl<'a, PCS: MultilinearPCS> vPIRPIOP<'a, PCS>
         self.pcs.get_challenge()
     }
 
-    pub fn get_zM(&self) -> [&RefCell<Vec<Coeff<PCS::Poly>>>; 1] {
-        [&self.z]
+    pub fn get_zcopy(&self) -> &Vec<Coeff<PCS::Poly>> {
+        &self.zcopy
     }
 
     pub fn zMtau(&self) -> &Coeff<PCS::Poly> {
         &self.zMtau
+    }
+
+    pub fn pcs(&self) -> &PCS {
+        &self.pcs
+    }
+
+    pub fn Mcom_coeff(&self) -> (&<PCS as MultilinearPCS>::C, &Vec<Coeff<PCS::Poly>>) {
+        (&self.Mcom, &self.Mcoeff)
     }
 }
 
 use rand::RngCore;
 use rand_seeder::{Seeder, SipRng};
 
-impl<'a, R> vPIRPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
+impl<'a, R> vMMPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<R>>>>
     where R: RingStore + Clone, R::Type: DivisibilityRing + FiniteRing,
 {
-    pub fn random(field: &'a AsField<R>, vc: usize, vcrows: usize, ver_rep: usize) -> Self {
-        let mut rng: SipRng = Seeder::from("vPIRPIOP").into_rng();
+    pub fn random(field: &'a AsField<R>, vc: usize, vcrows: usize,
+        k0: usize, c: usize, ver_rep: usize) -> Self
+    {
+        let mut rng: SipRng = Seeder::from("vMMPIOP").into_rng();
         let mut z = gen_vector::<El<AsField<R>>>(||
             // field.random_element(rand::random::<u64>), 1 << vc);
             field.random_element(|| rng.next_u64()), 1 << vc);
@@ -144,18 +152,18 @@ impl<'a, R> vPIRPIOP<'a, BaseFoldPCS<'a, AsField<R>, RSFoldableCode<'a, AsField<
             field.random_element(|| rng.next_u64()), (1 << vcrows)*z.len());
 
         let M = DenseMatrixMul::new(field, z.len(), Mdata,
-            format!("PIRdatabase{vc}{vcrows}").as_str());
+            format!("MMdatabase{vc}{vcrows}").as_str());
         let zM = M.mul(&z);
-        vPIRPIOP::new_extra(field, z, zM, M, ver_rep)
+        vMMPIOP::new_extra(field, z, zM, M, k0, c, ver_rep)
     }
 }
 
-impl<'a, PCS> vPIRPIOP<'a, PCS>
+impl<'a, PCS> vMMPIOP<'a, PCS>
     where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     pub fn execute(self) -> bool {
         let linchecksum = self.field().clone_el(&self.zMtau);
-        let lincheck = vPIRLincheck::for_piop(self);
+        let lincheck = vMMLincheck::for_piop(self);
         if let Some(rX) = lincheck.execute(linchecksum) {
             println!("SpartanLincheck complete!");
             lincheck.check_eval(rX)
@@ -164,34 +172,38 @@ impl<'a, PCS> vPIRPIOP<'a, PCS>
 }
 
 
-pub struct vPIRLincheckBase<'a, PCS: MultilinearPCS>
+pub struct vMMLincheckBase<'a, PCS: MultilinearPCS>
 {
-    piop: vPIRPIOP<'a, PCS>
+    piop: vMMPIOP<'a, PCS>
 }
 
-impl<'a, PCS:MultilinearPCS> vPIRLincheckBase<'a, PCS>
+impl<'a, PCS:MultilinearPCS> vMMLincheckBase<'a, PCS>
 {
-    pub fn for_piop(piop: vPIRPIOP<'a, PCS>) -> Self
+    pub fn for_piop(piop: vMMPIOP<'a, PCS>) -> Self
     {
         Self { piop }
     }
+
+    pub fn get_piop(&self) -> &vMMPIOP<'a, PCS> {
+        &self.piop
+    }
 }
 
-impl<'a, PCS> SumcheckBase<2> for vPIRLincheckBase<'a, PCS>
+impl<'a, PCS> SumcheckBase<2> for vMMLincheckBase<'a, PCS>
     where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
     type F = CoeffRing<PCS::Poly>;
 
     fn field(&self) -> &Self::F {
-        self.piop.field()
+        self.get_piop().field()
     }
 
     fn varcount(&self) -> usize {
-        self.piop.varcount_cols()
+        self.get_piop().varcount_cols()
     }
 
     fn get_challenge(&self) -> El<Self::F> {
-        self.piop.pcs.get_challenge()
+        self.get_piop().pcs.get_challenge()
     }
 
     fn get_other_eval_points(&self) -> [i32; 1] {
@@ -202,22 +214,22 @@ impl<'a, PCS> SumcheckBase<2> for vPIRLincheckBase<'a, PCS>
         -> impl Iterator<Item = (El<Self::F>, El<Self::F>)> + 'c
         where 'd: 'c
     {
-        let field = self.piop.field();
+        let field = self.field();
         (0..(1 << (self.varcount() - challs.len()).saturating_sub(1))).map(|_|
             (field.one(), field.one()))
     }
 }
 
-pub struct vPIRLincheck<'a, PCS: MultilinearPCS>
+pub struct vMMLincheck<'a, PCS: MultilinearPCS>
 {
-    base: vPIRLincheckBase<'a, PCS>,
+    base: vMMLincheckBase<'a, PCS>,
     wsM: RefCell<Vec<Coeff<PCS::Poly>>>,
 }
 
-impl<'a, PCS> vPIRLincheck<'a, PCS>
+impl<'a, PCS> vMMLincheck<'a, PCS>
     where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field>
 {
-    pub fn for_piop(piop: vPIRPIOP<'a, PCS>) -> Self
+    pub fn for_piop(piop: vMMPIOP<'a, PCS>) -> Self
     {
         let field = piop.field();
         let M = &piop.M;
@@ -230,9 +242,9 @@ impl<'a, PCS> vPIRLincheck<'a, PCS>
                 field.add_assign(rj, field.mul_ref_fst(Mj, field.clone_el(&eqi)))
             )
         );
-
+        
         let wsM = RefCell::new(tauM);
-        let base = vPIRLincheckBase::for_piop(piop);
+        let base = vMMLincheckBase::for_piop(piop);
         Self { base, wsM }
     }
 
@@ -241,10 +253,10 @@ impl<'a, PCS> vPIRLincheck<'a, PCS>
     }
 }
 
-impl<'a, PCS> Sumcheck<2, 2> for vPIRLincheck<'a, PCS>
+impl<'a, PCS> Sumcheck<2, 2> for vMMLincheck<'a, PCS>
     where PCS: MultilinearPCS, CoeffRing<PCS::Poly>: RingStore<Type: Field + FiniteRing>
 {
-    type SCB = vPIRLincheckBase<'a, PCS>;
+    type SCB = vMMLincheckBase<'a, PCS>;
 
     fn get_base(&self) -> &Self::SCB {
         &self.base
@@ -259,22 +271,25 @@ impl<'a, PCS> Sumcheck<2, 2> for vPIRLincheck<'a, PCS>
     }
 
     fn check_eval(self, rX: Vec<Coeff<PCS::Poly>>) -> bool {
-        // TODO: check _evalM
         let ring = self.base.field();
-        let y = {
-            let [_evalM, evalz] = self.get_workspace();
+        let (u, MtaurX) = {
+            let [evalM, evalz] = self.get_workspace();
             let evalzref = evalz.borrow();
-            debug_assert!(evalzref.len() == 1);
-            ring.clone_el(&evalzref[0])
+            let evalMref = evalM.borrow();
+            debug_assert!(evalzref.len() == 1 && evalMref.len() == 1);
+            (ring.clone_el(&evalzref[0]), ring.clone_el(&evalMref[0]))
         };
-        {
-            let ev = evaluate_at_fromcoeff(ring, self.base.varcount(), &rX, &self.base.piop.zcoeff);
-            debug_assert!(ring.eq_el(&y, &ev[0]));
-        }
-        let proof = self.base.piop.pcs.eval_fast(&self.base.piop.com, &rX,
-            ring.clone_el(&y), &self.base.piop.zcoeff);
-        let clonedy = ring.clone_el(&y);
-        self.base.piop.pcs.verify(self.base.piop.com, &rX, clonedy, &self.base.piop.zcoeff, proof)
+
+        let z = self.get_base().get_piop().get_zcopy();
+        let z_at_rX = evaluate_at_fromevals(ring, &rX, z);
+        if !ring.eq_el(&u, &z_at_rX) { return false }
+
+        let taurX = rX.iter().chain(self.base.piop.tau.iter()).map(|el|
+            ring.clone_el(el)).collect_vec();
+        let proof = self.base.piop.pcs.eval_fast(&self.base.piop.Mcom, &taurX,
+            ring.clone_el(&MtaurX), &self.base.piop.Mcoeff);
+        self.base.piop.pcs.verify(&self.base.piop.Mcom, &taurX, MtaurX,
+            &self.base.piop.Mcoeff, proof)
     }
 }
 
@@ -287,15 +302,15 @@ mod tests {
     const VREP: usize = 100;
 
     #[test]
-    fn test_vpir() {
+    fn test_vmm() {
 
         let field = Zn::new(65537).as_field().ok().unwrap();
 
         // let N = 4;
-        let N = 12;
+        let N = 10;
         
-        let vpir = vPIRPIOP::random(&field, N, N+1, VREP);
+        let vmm = vMMPIOP::random(&field, N, N+1, 4, 2, VREP);
 
-        assert!(vpir.execute());
+        assert!(vmm.execute());
     }
 }
