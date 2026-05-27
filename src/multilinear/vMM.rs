@@ -10,7 +10,7 @@ use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
 use crate::{
     codes::foldablecodes::RSFoldableCode,
-    basefold::{
+    commit::basefold::{
         MultilinearPCS,
         BaseFoldPCS
     },
@@ -21,7 +21,7 @@ use crate::{
         evals_to_coeffs_inplace,
         evaluate_at_fromevals
     },
-    matmul::{MatrixMul, DenseMatrixMul}
+    util::matmul::{MatrixMul, DenseMatrixMul}
 };
 
 pub struct vMMPIOP<'a, PCS: MultilinearPCS>

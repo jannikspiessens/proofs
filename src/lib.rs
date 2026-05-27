@@ -13,13 +13,7 @@ pub mod multilinear;
 
 pub mod codes;
 
-pub mod basefold;
-
-pub mod spartan;
+pub mod commit;
 
 pub mod r1cs;
-
-pub mod matmul;
-
-pub mod vMM;
 

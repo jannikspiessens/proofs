@@ -4,7 +4,7 @@ use feanor_math::algorithms::linsolve::LinSolveRing;
 use feanor_math::ring::{RingStore, El};
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
-use crate::matmul::MatrixMul;
+use crate::util::matmul::MatrixMul;
 use crate::util::gen_vector;
 use crate::codes::{LinearCode, RScode};
 

@@ -7,7 +7,7 @@ use feanor_math::rings::finite::FiniteRing;
 use crate::util::{bits_from_int, int_from_bits};
 use crate::multilinear::{MultilinearBasis, MultilinearBasisEvals};
 
-use crate::matmul::{MatrixMul, SparseMatrixMul};
+use crate::util::matmul::{MatrixMul, SparseMatrixMul};
 
 pub struct R1CSMatrix<'a, R: RingStore> {
     rowlogsize: usize,

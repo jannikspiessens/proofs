@@ -10,7 +10,7 @@ use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
 use crate::{
     codes::foldablecodes::RSFoldableCode,
-    basefold::{
+    commit::basefold::{
         MultilinearPCS,
         BaseFoldPCS
     },

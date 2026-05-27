@@ -13,6 +13,11 @@ use crate::util::{bits_from_int, gen_vector, Coeff};
 
 pub mod sumcheck;
 
+pub mod spartan;
+
+pub mod vMM;
+
+
 // indeterminates are ordered from encoding the lsb to encoding the msb
 pub fn from_hypercube_coeffs<Poly>(polyring: &Poly, coeffs: &[Coeff<Poly>]) -> El<Poly>
     where Poly: MultivariatePolyRingStore<Type: MultivariatePolyRing>

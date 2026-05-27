@@ -8,6 +8,9 @@ pub type CoeffRing<P> = <<P as RingStore>::Type as RingExtension>::BaseRing;
 pub type Coeff<P> = El<CoeffRing<P>>;
 
 
+pub mod matmul;
+
+
 pub fn gen_vector<EL>(mut f: impl FnMut() -> EL, len: usize)
     -> Vec<EL> {
     (0..len).map(|_| f()).collect()

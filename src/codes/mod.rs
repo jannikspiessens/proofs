@@ -5,7 +5,7 @@ use feanor_math::algorithms::linsolve::{LinSolveRing, LinSolveRingStore};
 use feanor_math::primitive_int::StaticRing;
 use feanor_math::ring::{RingStore, RingBase, El};
 
-use crate::matmul::{MatrixMul, DenseMatrixMul};
+use crate::util::matmul::{MatrixMul, DenseMatrixMul};
 
 pub mod foldablecodes;
 
