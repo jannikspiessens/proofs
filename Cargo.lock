@@ -41,8 +41,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "feanor-math"
 version = "3.5.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a78768b915b608997bb6be55e866f5a9cad0cd045f625d92b446cc8f1ef0ef67"
+source = "git+https://github.com/jannikspiessens/feanor-math.git#b47f649c201519a4a4cb404d63e10a28fb4b6b55"
 dependencies = [
  "append-only-vec",
  "atomicbox",
@@ -53,6 +52,7 @@ dependencies = [
  "serde",
  "serde_assert",
  "serde_bytes",
+ "smallvec",
  "stability",
  "thread_local",
 ]
