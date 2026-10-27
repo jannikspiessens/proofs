@@ -7,8 +7,6 @@ use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 use crate::util::{gen_vector, matmul::MatrixMul};
 use crate::codes::{LinearCode, RScode};
 
-// Default
-pub type DFC<'a, F> = RSFoldableCode<'a, F>;
 
 pub trait FoldableCode {
 

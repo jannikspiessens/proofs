@@ -2,7 +2,7 @@ use itertools::{izip, Itertools};
 use std::cell::{RefMut, RefCell};
 use rand::Rng;
 
-use feanor_math::integer::{BigIntRing, IntegerRingStore};
+use feanor_math::integer::IntegerRingStore;
 use feanor_math::field::Field;
 use feanor_math::ring::{RingStore, El};
 use feanor_math::rings::finite::FiniteRing;
@@ -17,7 +17,7 @@ use crate::{
         },
     },
     r1cs::R1CS,
-    util::{gen_random, Coeff, CoeffRing},
+    util::{gen_random, Coeff, CoeffRing, ZZbig},
     multilinear::{
         sumcheck::{Sumcheck, SumcheckBase},
         MultilinearBasis, MultilinearBasisEvals,
@@ -89,7 +89,6 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
     pub fn proofsize(&'a self) -> usize {
         let rowchecksize = 4*self.vc_rows;
         let linchecksize = 3*self.vc_cols;
-        let ZZbig: BigIntRing = BigIntRing::RING;
         let bits =
             ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
         return self.pcs.proofsize() + bits*(rowchecksize + linchecksize)

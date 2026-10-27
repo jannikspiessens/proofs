@@ -2,11 +2,20 @@ use feanor_math::ring::{RingExtension, RingStore, El};
 use feanor_math::rings::multivariate::{
     MultivariatePolyRing,
 };
-use crate::util::{CoeffRing, Coeff};
+use crate::{
+    codes::DFC,
+    util::{CoeffRing, Coeff}
+};
 
 pub mod basefold;
 
 pub mod abdlop;
+
+
+// Default
+pub type DPCS<'a, F> = crate::commit::basefold::BaseFoldPCS<'a, DFC<'a, F>,
+    crate::commit::basefold::BaseFoldSumcheckDoubleEfficient<'a, F>
+>;
 
 
 pub trait Proof {}

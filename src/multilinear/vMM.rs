@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use std::cell::{RefCell};
 
-use feanor_math::integer::{BigIntRing, IntegerRingStore};
+use feanor_math::integer::IntegerRingStore;
 use feanor_math::field::Field;
 use feanor_math::ring::{RingStore, El};
 use feanor_math::rings::finite::FiniteRing;
@@ -10,7 +10,7 @@ use crate::{
     codes::foldablecodes::RSFoldableCode,
     commit::MultilinearPCS,
     commit::basefold::{BaseFoldPCS, BaseFoldSumcheck},
-    util::{Coeff, CoeffRing},
+    util::{Coeff, CoeffRing, ZZbig},
     multilinear::{
         sumcheck::{Sumcheck, SumcheckBase},
         MultilinearBasisEvals,
@@ -75,7 +75,6 @@ impl<'a, F, BSC> vMMPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
 
     pub fn proofsize(&self) -> usize {
         let linchecksize = 3*self.vc_cols;
-        let ZZbig: BigIntRing = BigIntRing::RING;
         let bits = ZZbig.abs_log2_ceil(&self.pcs.coeffring().characteristic(ZZbig).unwrap()).unwrap();
         return self.pcs.proofsize() + bits*linchecksize
     }
@@ -129,10 +128,10 @@ impl<'a, PCS: MultilinearPCS<'a>> vMMPIOP<'a, PCS>
 use rand_seeder::{Seeder, SipRng, rand_core::TryRng};
 use feanor_math::rings::finite::FiniteRingStore;
 use crate::util::gen_vector;
+use crate::commit::basefold::BaseFoldSumcheckDoubleEfficient;
 
-impl<'a, F, BSC> vMMPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
-    where F: RingStore + Clone, F::Type: Field + FiniteRing,
-          BSC: BaseFoldSumcheck<'a>, <BSC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
+impl<'a, F> vMMPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BaseFoldSumcheckDoubleEfficient<'a, F>>>
+    where F: RingStore + Clone, F::Type: Field + FiniteRing
 {
     pub fn random(field: &'a F, vc: usize, vcrows: usize,
         k0: usize, c: usize, ver_rep: usize) -> Self
@@ -178,8 +177,8 @@ impl<'a, PCS:MultilinearPCS<'a>> vMMLincheckBase<'a, PCS>
         Self { piop }
     }
 
-    pub fn get_piop(&self) -> &vMMPIOP<'a, PCS> {
-        &self.piop
+    pub fn get_piop(&self) -> &'a vMMPIOP<'a, PCS> {
+        self.piop
     }
 }
 
@@ -242,10 +241,6 @@ impl<'a, PCS> vMMLincheck<'a, PCS>
         let base = vMMLincheckBase::for_piop(piop);
         Self { base, tauM,
             wsM: RefCell::default(), wsz: RefCell::default() }
-    }
-
-    pub fn get_wsM(&self) -> &RefCell<Vec<Coeff<PCS::Poly>>> {
-        &self.wsM
     }
 }
 

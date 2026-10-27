@@ -26,11 +26,8 @@ use feanor_math::algorithms::{
 use crate::{
     FSRng,
     lattice::gen_vector_infbnd,
-    util::matmul::{MatrixMul, DenseMatrixMul},
+    util::{ZZbig, matmul::{MatrixMul, DenseMatrixMul}},
 };
-
-
-pub const ZZbig: BigIntRing = BigIntRing::RING;
 
 
 pub struct ABDLOPRingBase<R: RingStore, const N: usize>

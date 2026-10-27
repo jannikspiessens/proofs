@@ -5,7 +5,7 @@ use itertools::{izip, Itertools};
 
 use tracing::instrument;
 use feanor_math::homomorphism::Homomorphism;
-use feanor_math::integer::{BigIntRing, IntegerRingStore};
+use feanor_math::integer::IntegerRingStore;
 use feanor_math::ring::{RingStore, RingBase, El};
 use feanor_math::field::{Field, FieldStore};
 use feanor_math::rings::finite::FiniteRing;
@@ -15,7 +15,7 @@ use feanor_math::rings::multivariate::{
 };
 
 use crate::FSRng;
-use crate::util::{Coeff, FiatShamirSim};
+use crate::util::{Coeff, FiatShamirSim, ZZbig};
 use crate::codes::{
     LinearCode,
     foldablecodes::{FoldableCode, RSFoldableCode}
@@ -85,7 +85,6 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
         let d = self.code.d();
         let proofsize = d*2*self.ver_rep.unwrap() + 3*d +
             if self.code.k(0) == 0 { 0 } else { self.code.k(0).ilog2() as usize };
-        let ZZbig: BigIntRing = BigIntRing::RING;
         let bits = ZZbig.abs_log2_ceil(&self.field().characteristic(ZZbig).unwrap()).unwrap();
         let authpath = self.code.n(d).ilog2() as usize * 256; // worst-case no pruning
         return proofsize*(bits + authpath)

@@ -12,11 +12,11 @@ use feanor_math::rings::{
 use crate::{
     FSRng,
     commit::abdlop::{
-        ZZbig, ABDLOP, ABDLOPcommitment, ABDLOPmessage, ABDLOPopening, ABDLOPparts, ABDLOPRingTrait
+        ABDLOP, ABDLOPcommitment, ABDLOPmessage, ABDLOPopening, ABDLOPparts, ABDLOPRingTrait
     },
     lattice::{gen_infbnd, gen_vector_dgauss, gen_vector_latrejsampl, norm2, RejSamplModes},
     util::{
-        gen_vector, gen_random, FiatShamirSim,
+        gen_vector, gen_random, FiatShamirSim, ZZbig,
         matmul::{MatrixMul, SparseMatrixMul, DenseMatrixMul},
     }
 };

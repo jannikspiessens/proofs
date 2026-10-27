@@ -2,6 +2,7 @@ use std::ops::{RangeBounds, Range, Bound};
 use std::ops::Bound::{Included, Excluded};
 use rand::{CryptoRng, Rng, SeedableRng, rngs::{ThreadRng, StdRng}};
 
+use feanor_math::integer::BigIntRing;
 use feanor_math::ring::{El, RingStore, RingExtension};
 use feanor_math::rings::finite::{FiniteRingStore, FiniteRing};
 
@@ -10,6 +11,9 @@ pub type Coeff<P> = El<CoeffRing<P>>;
 
 
 pub mod matmul;
+
+
+pub const ZZbig: BigIntRing = BigIntRing::RING;
 
 
 pub fn gen_vector<EL>(mut f: impl FnMut() -> EL, len: usize) -> Vec<EL> {

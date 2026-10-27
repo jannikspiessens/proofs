@@ -14,8 +14,7 @@ use feanor_math::ordered::OrderedRingStore;
 
 use crate::{
     FSRng,
-    util::{gen_vector, FiatShamirSim},
-    commit::abdlop::ZZbig
+    util::{gen_vector, FiatShamirSim, ZZbig}
 };
 
 

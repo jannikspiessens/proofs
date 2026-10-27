@@ -7,7 +7,13 @@ use feanor_math::ring::{RingStore, RingBase, El};
 
 use crate::util::matmul::{MatrixMul, DenseMatrixMul};
 
+
 pub mod foldablecodes;
+
+
+// Default
+pub type DFC<'a, F> = crate::codes::foldablecodes::RSFoldableCode<'a, F>;
+
 
 pub trait LinearCode {
 

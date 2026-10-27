@@ -5,8 +5,9 @@ use rand::Rng;
 use feanor_math::ring::*;
 use feanor_math::homomorphism::{CanHom, Homomorphism, CanHomFrom};
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
+use feanor_math::integer::IntegerRingStore;
 
-use crate::util::{gen_random, contains_range};
+use crate::util::{gen_random, contains_range, ZZbig};
 
 pub trait MatrixMul: Clone {
     type R: RingStore;
@@ -36,6 +37,12 @@ pub trait MatrixMul: Clone {
             }
             println!();
         }
+    }
+
+    // number of bits
+    fn size(&self) -> u64 {
+        let bitsize = ZZbig.abs_log2_ceil(&self.ring().characteristic(ZZbig).unwrap()).unwrap();
+        (self.columns() as u64)*(self.rows() as u64)*(bitsize as u64)
     }
 }
 
