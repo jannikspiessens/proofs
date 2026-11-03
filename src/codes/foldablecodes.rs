@@ -2,10 +2,9 @@ use tracing::instrument;
 
 use feanor_math::algorithms::linsolve::LinSolveRing;
 use feanor_math::ring::{RingStore, El};
-use feanor_math::divisibility::DivisibilityRingStore;
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
-use crate::util::{gen_vector, matmul::MatrixMul};
+use crate::util::{batch_invert, gen_vector, matmul::MatrixMul};
 use crate::codes::{LinearCode, RScode};
 
 
@@ -139,11 +138,11 @@ impl<'a, R> RSFoldableCode<'a, R>
         }
     }
 
-    // computes 1/(2*t_i) for all t vectors
+    // computes 1/(2*t_i) for all t vectors, using a single batch inversion
     pub fn construct_inv2t(ring: &R, t: &[Vec<El<R>>]) -> Vec<Vec<El<R>>> {
-        t.iter().map(|tvec| tvec.iter().map(|ti|
-            ring.invert(&ring.add_ref(ti, ti)).expect("2*t_i must be invertible")
-        ).collect()).collect()
+        let twot: Vec<_> = t.iter().flatten().map(|ti| ring.add_ref(ti, ti)).collect();
+        let mut inv = batch_invert(ring, &twot).expect("2*t_i must be invertible").into_iter();
+        t.iter().map(|tvec| inv.by_ref().take(tvec.len()).collect()).collect()
     }
 }
 

@@ -4,6 +4,7 @@ use rand::{CryptoRng, Rng, SeedableRng, rngs::{ThreadRng, StdRng}};
 
 use feanor_math::integer::BigIntRing;
 use feanor_math::ring::{El, RingStore, RingExtension};
+use feanor_math::divisibility::{DivisibilityRing, DivisibilityRingStore};
 use feanor_math::rings::finite::{FiniteRingStore, FiniteRing};
 
 pub type CoeffRing<P> = <<P as RingStore>::Type as RingExtension>::BaseRing;
@@ -24,6 +25,35 @@ pub fn gen_random<R, RNG>(ring: &R, mut rng: RNG, len: usize) -> Vec<El<R>>
     where R: RingStore<Type: FiniteRing>, RNG: Rng
 {
     gen_vector::<El<R>>(|| ring.random_element(|| rng.next_u64()), len)
+}
+
+// Montgomery's trick: inverts all elements of xs using a single inversion and
+// 3(n - 1) multiplications. Returns None if some element is not invertible.
+// Faster than separate inversions from n = 2 onwards (except for very small
+// primes with cheap inversion, where the crossover is around n = 4).
+pub fn batch_invert<R>(ring: &R, xs: &[El<R>]) -> Option<Vec<El<R>>>
+    where R: RingStore<Type: DivisibilityRing>
+{
+    if xs.is_empty() {
+        return Some(Vec::new());
+    }
+
+    // res[i] = x_0 * ... * x_i
+    let mut res = Vec::with_capacity(xs.len());
+    res.push(ring.clone_el(&xs[0]));
+    for x in &xs[1..] {
+        res.push(ring.mul_ref(res.last().unwrap(), x));
+    }
+
+    // invariant: inv = 1 / (x_0 * ... * x_i) at the start of iteration i;
+    // res[i - 1] still holds the prefix product, so res[i] becomes 1 / x_i
+    let mut inv = ring.invert(res.last().unwrap())?;
+    for i in (1..xs.len()).rev() {
+        res[i] = ring.mul_ref(&inv, &res[i - 1]);
+        ring.mul_assign_ref(&mut inv, &xs[i]);
+    }
+    res[0] = inv;
+    Some(res)
 }
 
 // TODO: check where we can use this instead of calling bits_from_int for all ints
@@ -149,6 +179,27 @@ mod tests {
         assert!(bits(N).count() == 1 << N);
         assert!(bits(N).zip(0..(1 << N)).all(|(bv, i)|
             bits_from_int(i, N).enumerate().all(|(ind, b)| bv[ind] == b)));
+    }
+
+    #[test]
+    fn test_batch_invert() {
+
+        let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
+
+        assert!(batch_invert(&field, &[]).unwrap().is_empty());
+
+        for n in [1, 2, 3, 17] {
+            let mut xs = gen_random(&field, &mut rng, n);
+            xs.iter_mut().filter(|x| field.is_zero(x)).for_each(|x| *x = field.one());
+            let invs = batch_invert(&field, &xs).unwrap();
+            assert_eq!(invs.len(), n);
+            assert!(xs.iter().zip(invs.iter()).all(|(x, ix)| field.is_one(&field.mul_ref(x, ix))));
+
+            // a zero anywhere makes the batch non-invertible
+            xs[n / 2] = field.zero();
+            assert!(batch_invert(&field, &xs).is_none());
+        }
     }
 
     #[test]

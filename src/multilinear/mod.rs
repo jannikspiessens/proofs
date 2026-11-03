@@ -9,7 +9,7 @@ use feanor_math::rings::multivariate::{
     MultivariatePolyRingStore,
 };
 
-use crate::util::{bits_from_int, gen_vector, Coeff};
+use crate::util::{batch_invert, bits_from_int, gen_vector, Coeff};
 
 pub mod sumcheck;
 
@@ -127,7 +127,11 @@ pub struct MultilinearBasisEvals<'a, F>
 {
     mb: MultilinearBasis<'a, F>,
     ind: usize,
-    pub cur: El<F>
+    pub cur: El<F>,
+    // inv_z[j] = 1 / z_j
+    inv_z: Vec<El<F>>,
+    // inv_omz[j] = 1 / (1 - z_j)
+    inv_omz: Vec<El<F>>
 }
 
 impl<'a, F> MultilinearBasisEvals<'a, F>
@@ -138,8 +142,18 @@ impl<'a, F> MultilinearBasisEvals<'a, F>
     }
 
     fn from_basis(mb: MultilinearBasis<'a, F>) -> Self {
+        // next() divides by z_i and by 1 - z_i
+        assert!(!mb.z.iter().any(|el| mb.ring.is_zero(el) || mb.ring.is_one(el)),
+            "MultilinearBasisEvals: z must not contain zero or one elements");
+        let field = mb.ring;
+        // invert [z_0, .., z_{n-1}, 1 - z_0, .., 1 - z_{n-1}] with a single inversion
+        let to_invert: Vec<_> = mb.z.iter().map(|zj| field.clone_el(zj))
+            .chain(mb.z.iter().map(|zj| field.sub_ref_snd(field.one(), zj)))
+            .collect();
+        let mut inv_z = batch_invert(field, &to_invert).unwrap();
+        let inv_omz = inv_z.split_off(mb.z.len());
         let cur = MultilinearBasisEvals::zero_eval(&mb);
-        Self { mb, ind: 0, cur }
+        Self { mb, ind: 0, cur, inv_z, inv_omz }
     }
 
     pub fn reset(&mut self) {
@@ -163,7 +177,9 @@ impl<'a, F> Clone for MultilinearBasisEvals<'a, F>
                 z: self.mb.z
             },
             ind: self.ind,
-            cur: self.mb.ring.clone_el(&self.cur)
+            cur: self.mb.ring.clone_el(&self.cur),
+            inv_z: self.inv_z.iter().map(|el| self.mb.ring.clone_el(el)).collect(),
+            inv_omz: self.inv_omz.iter().map(|el| self.mb.ring.clone_el(el)).collect()
         }
     }
 }
@@ -180,16 +196,12 @@ impl<'a, F> Iterator for MultilinearBasisEvals<'a, F>
             let res = field.clone_el(&self.cur);
 
             self.ind += 1;
-            // TODO: use bits instead of bits_from_int here
-            // store bit repr of ind istead
-            let j = bits_from_int(self.ind, self.mb.z.len()).position(|b| b == 1).unwrap();
-            let mut scalar = field.div(&self.mb.z[j], &field.sub_ref_snd(field.one(), &self.mb.z[j]));
-            if j > 0 {
-                field.mul_assign(&mut scalar,
-                    (0..j).fold(field.one(), |acc, i|
-                        field.mul(acc, field.div(
-                            &field.sub_ref_snd(field.one(), &self.mb.z[i]), &self.mb.z[i]))));
-            }
+            let j = self.ind.trailing_zeros() as usize;
+            // scalar = z_j / (1 - z_j) * prod_{i < j} (1 - z_i) / z_i
+            let mut scalar = field.mul_ref(&self.mb.z[j], &self.inv_omz[j]);
+            (0..j).for_each(|i|
+                field.mul_assign(&mut scalar, field.mul_ref_snd(
+                    field.sub_ref_snd(field.one(), &self.mb.z[i]), &self.inv_z[i])));
             self.cur = field.mul_ref_fst(&self.cur, scalar);
             Some(res)
         } else if self.ind == ((1 << self.mb.z.len()) - 1) {
