@@ -2,6 +2,7 @@ use tracing::instrument;
 
 use feanor_math::algorithms::linsolve::LinSolveRing;
 use feanor_math::ring::{RingStore, El};
+use feanor_math::divisibility::DivisibilityRingStore;
 use feanor_math::rings::finite::{FiniteRing, FiniteRingStore};
 
 use crate::util::{gen_vector, matmul::MatrixMul};
@@ -20,10 +21,13 @@ pub trait FoldableCode {
     fn k(&self, d: usize) -> usize {self.k0()*(1 << d)}
     fn n(&self, d: usize) -> usize {self.c()*self.k(d)}
     fn t(&self, d: usize) -> impl Iterator<Item = &El<Self::R>>;
+    // precomputed 1/(2*t_i), matching t(d) elementwise
+    fn inv2t(&self, d: usize) -> impl Iterator<Item = &El<Self::R>>;
     fn G0code(&self) -> &Self::C;
 
     fn check_invariants(&self) {
         assert!((0..self.d()).all(|dind| self.t(dind).count() == self.n(dind)));
+        assert!((0..self.d()).all(|dind| self.inv2t(dind).count() == self.n(dind)));
         assert!(self.n(0) == self.G0code().generator().rows());
         assert!(self.k(0) == self.G0code().generator().columns());
     }
@@ -77,7 +81,8 @@ pub trait FoldableCode {
 pub struct RSFoldableCode<'a, R: RingStore<Type: LinSolveRing>> {
     G0code: RScode<'a, R>,
     d: Option<usize>,
-    t: Vec<Vec<El<R>>>
+    t: Vec<Vec<El<R>>>,
+    inv2t: Vec<Vec<El<R>>>
 }
 
 impl<'a, R> RSFoldableCode<'a, R> 
@@ -91,11 +96,13 @@ impl<'a, R> RSFoldableCode<'a, R>
         let t = if let Some(d) = d {
             Self::construct_t(d, &G0code)
         } else { Vec::new() };
+        let inv2t = Self::construct_inv2t(ring, &t);
 
         Self {
             G0code,
             d,
-            t
+            t,
+            inv2t
         }
     }
 
@@ -122,12 +129,21 @@ impl<'a, R> RSFoldableCode<'a, R>
 
         let d = t.len();
         assert!((0..d).all(|dind| t[dind].len() == c*k0*(1 << dind)));
+        let inv2t = Self::construct_inv2t(ring, &t);
 
         Self {
             G0code,
             d: Some(d),
-            t
+            t,
+            inv2t
         }
+    }
+
+    // computes 1/(2*t_i) for all t vectors
+    pub fn construct_inv2t(ring: &R, t: &[Vec<El<R>>]) -> Vec<Vec<El<R>>> {
+        t.iter().map(|tvec| tvec.iter().map(|ti|
+            ring.invert(&ring.add_ref(ti, ti)).expect("2*t_i must be invertible")
+        ).collect()).collect()
     }
 }
 
@@ -154,6 +170,10 @@ impl<'a, Rg: RingStore<Type: LinSolveRing>> FoldableCode for RSFoldableCode<'a, 
 
     fn t(&self, d: usize) -> impl Iterator<Item = &El<Self::R>> {
         self.t[d].iter()
+    }
+
+    fn inv2t(&self, d: usize) -> impl Iterator<Item = &El<Self::R>> {
+        self.inv2t[d].iter()
     }
 
     fn G0code(&self) -> &RScode<'a, Rg> {

@@ -194,8 +194,8 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
             wpoly = self.polyring().specialize(&wpoly, curfreevc, &challconst);
 
             proofcodes.push(
-                self.code.t(dind).enumerate().map(|(i, ti)| {
-                    interpdeg1(f, ti, &topcode[i], &topcode[i + self.code.n(dind)], &chall)
+                self.code.t(dind).zip(self.code.inv2t(dind)).enumerate().map(|(i, (ti, ci))| {
+                    interpdeg1_cached(f, ti, &topcode[i], &topcode[i + self.code.n(dind)], &chall, ci)
                 }).collect()
             );
             topcode = &proofcodes[d - 1 - dind];
@@ -247,9 +247,10 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
 
             let dind = d - 1 - i;
             let t = self.code.t(dind).collect_vec();
+            let inv2t = self.code.inv2t(dind).collect_vec();
             let mut rescode = (0..self.ver_rep.unwrap()).all(|j| {
-                let interp = interpdeg1(self.coeffring(), t[mu[j]],
-                    &topcode[mu[j]], &topcode[mu[j] + self.code.n(dind)], &chall);
+                let interp = interpdeg1_cached(self.coeffring(), t[mu[j]],
+                    &topcode[mu[j]], &topcode[mu[j] + self.code.n(dind)], &chall, inv2t[mu[j]]);
                 self.coeffring().eq_el(&interp, &code[mu[j]])
             });
             if dind > 0 {
@@ -332,8 +333,8 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
 
             proofcodes.push({
                 let (l, r) = topcode.split_at(self.code.n(dind));
-                izip!(self.code.t(dind), l, r).map(|(ti, li, ri)|
-                    interpdeg1(f, ti, li, ri, &chall)
+                izip!(self.code.t(dind), self.code.inv2t(dind), l, r).map(|(ti, ci, li, ri)|
+                    interpdeg1_cached(f, ti, li, ri, &chall, ci)
                 ).collect()
             });
             topcode = &proofcodes[d - 1 - dind];
@@ -349,6 +350,10 @@ impl<'a, 'b, C, SC> MultilinearPCS<'b> for BaseFoldPCS<'a, C, SC>
     
         assert!(self.code.k(0).ilog2() as usize == vc - d);
         if self.code.k(0) > 1 {
+            // TODO: this is an extra full pass over polyeval. When the last sumcheck round ran in
+            // the standard (folding) phase, i.e. d - 1 >= m for the double-efficient sumcheck, the
+            // workspace already holds p(x, r_{vc-d+1}, ..) of size 2*k0, so folding it once with
+            // challvec[0] gives the same result in O(k0). Needs a trait method exposing this.
             last = {
                 let mut tmp = evaluate_at_fromevals(&f, vc, &challvec, polyeval.unwrap());
                 evals_to_coeffs_inplace(&f, vc - d, &mut tmp);
@@ -618,14 +623,19 @@ impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckDoubleEfficient<'a, F>
 pub fn interpdeg1<F>(field: &F, x: &El<F>, y1: &El<F>, y2: &El<F>, a: &El<F>) -> El<F>
     where F: RingStore<Type: Field>
 {
+    interpdeg1_cached(field, x, y1, y2, a,
+        &field.div(&field.one(), &field.get_ring().mul_int_ref(x, 2)))
+}
+
+pub fn interpdeg1_cached<F>(field: &F, x: &El<F>, y1: &El<F>, y2: &El<F>, a: &El<F>, c: &El<F>)
+    -> El<F>
+    where F: RingStore<Type: Field>
+{
     let mut tmpleft = field.add_ref(a, x);
     let mut tmpright = field.sub_ref(x, a);
     field.mul_assign_ref(&mut tmpleft, y1);
     field.mul_assign_ref(&mut tmpright, y2);
-    field.div(
-        &field.add(tmpleft, tmpright),
-        &field.get_ring().mul_int_ref(x, 2)
-    )
+    field.mul_ref_snd(field.add(tmpleft, tmpright), c)
 }
 
 
