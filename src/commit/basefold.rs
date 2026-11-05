@@ -381,42 +381,39 @@ pub trait BaseFoldSumcheck<'a>: Sumcheck<2, 1>
 }
 
 
-pub struct BaseFoldSumcheckBasic<'a, R, const TE: bool>
+// The eq_z scalars of the BaseFold sumcheck sum_x p(x) * eq_z(x). Independent of how (or whether)
+// the evaluations of p are stored, so that other provers of this sumcheck (e.g. on encrypted p)
+// can reuse it.
+pub struct BaseFoldScalars<'a, R>
     where R: RingStore
 {
     field: &'a R,
-    vc: usize,
-    evalsref: &'a [El<R>],
-    ws: RefCell<Vec<El<R>>>,
     z: Vec<El<R>>,
-    scalarstate: RefCell<El<R>>
+    // eq(z[vc - i..], challs) after get_scalars was called with challs of length i
+    state: RefCell<El<R>>
 }
 
-impl<'a, F, const TE: bool> BaseFoldSumcheck<'a> for BaseFoldSumcheckBasic<'a, F, TE>
+impl<'a, F> BaseFoldScalars<'a, F>
     where F: RingStore<Type: Field + FiniteRing>
 {
-    #[instrument(skip_all)]
-    fn new(field: &'a F, evalsref: &'a [El<F>], z: Vec<El<F>>) -> Self
-    {
-        let vc = z.len();
-        assert!(1 << vc == evalsref.len());
-        Self {
-            field, vc,
-            evalsref,
-            ws: RefCell::default(),
-            z,
-            scalarstate: RefCell::new(field.one())
-        }
+    pub fn new(field: &'a F, z: Vec<El<F>>) -> Self {
+        Self { field, z, state: RefCell::new(field.one()) }
     }
 
-    #[instrument(skip_all)]
-    fn compute_round_bsc(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
-        self.compute_round(challs, sum)
+    pub fn z(&self) -> &[El<F>] {
+        &self.z
+    }
+
+    // sets the state as if get_scalars was called for every prefix of challs (round by round),
+    // for provers that skip calling get_scalars in some rounds
+    pub fn set_state(&self, challs: &[El<F>]) {
+        let vc = self.z.len();
+        *self.state.borrow_mut() = MultilinearBasis::new(self.field,
+            &self.z[(vc - challs.len())..]).evaluate(challs);
     }
 }
 
-
-impl<'a, F, const TE: bool> SumcheckBase<2> for BaseFoldSumcheckBasic<'a, F, TE>
+impl<'a, F> SumcheckBase<2> for BaseFoldScalars<'a, F>
     where F: RingStore<Type: Field + FiniteRing>
 {
     type F = F;
@@ -426,11 +423,11 @@ impl<'a, F, const TE: bool> SumcheckBase<2> for BaseFoldSumcheckBasic<'a, F, TE>
     }
 
     fn varcount(&self) -> usize {
-        self.vc
+        self.z.len()
     }
 
     fn get_challenge(&self) -> El<F> {
-        // we do not intend to call execute, so not needed
+        // the challenges are drawn by the PCS, so not needed
         unimplemented!()
     }
 
@@ -444,8 +441,8 @@ impl<'a, F, const TE: bool> SumcheckBase<2> for BaseFoldSumcheckBasic<'a, F, TE>
         where 'c: 'b
     {
         let field = self.field();
-        let vcmini = self.vc - challs.len();
-        let mut scstmut = self.scalarstate.borrow_mut();
+        let vcmini = self.varcount() - challs.len();
+        let mut scstmut = self.state.borrow_mut();
         if challs.len() > 0 {
             field.mul_assign(&mut scstmut,
                 MultilinearBasis::new(field, &self.z[vcmini..(vcmini + 1)]).evaluate(&challs[..1]));
@@ -462,15 +459,44 @@ impl<'a, F, const TE: bool> SumcheckBase<2> for BaseFoldSumcheckBasic<'a, F, TE>
 }
 
 
+pub struct BaseFoldSumcheckBasic<'a, R, const TE: bool>
+    where R: RingStore
+{
+    scalars: BaseFoldScalars<'a, R>,
+    evalsref: &'a [El<R>],
+    ws: RefCell<Vec<El<R>>>,
+}
+
+impl<'a, F, const TE: bool> BaseFoldSumcheck<'a> for BaseFoldSumcheckBasic<'a, F, TE>
+    where F: RingStore<Type: Field + FiniteRing>
+{
+    #[instrument(skip_all)]
+    fn new(field: &'a F, evalsref: &'a [El<F>], z: Vec<El<F>>) -> Self
+    {
+        assert!(1 << z.len() == evalsref.len());
+        Self {
+            scalars: BaseFoldScalars::new(field, z),
+            evalsref,
+            ws: RefCell::default(),
+        }
+    }
+
+    #[instrument(skip_all)]
+    fn compute_round_bsc(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
+        self.compute_round(challs, sum)
+    }
+}
+
+
 impl<'a, F, const TE: bool> Sumcheck<2, 1> for BaseFoldSumcheckBasic<'a, F, TE>
     where F: RingStore<Type: Field + FiniteRing>
 {
-    type SCB = Self;
+    type SCB = BaseFoldScalars<'a, F>;
 
     fn TE() -> bool { TE }
 
-    fn get_base(&self) -> &Self {
-        &self
+    fn get_base(&self) -> &Self::SCB {
+        &self.scalars
     }
 
     fn get_reference(&self) -> [&[El<F>]; 1] {
@@ -507,11 +533,12 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
     {
         let zclone = z.iter().map(|el| field.clone_el(el)).collect_vec();
         let bscb = BaseFoldSumcheckBasic::<'a, F, true>::new(field, evalsref, zclone);
-        let m = bscb.vc.div_ceil(2);
+        let vc = z.len();
+        let m = vc.div_ceil(2);
         {
             let mut ws = bscb.ws.borrow_mut();
             ws.shrink_to(1 << m); // NOTE: basic basefoldsumcheck reserves too much
-            let vcminm = bscb.vc - m;
+            let vcminm = vc - m;
 
             // TODO: refactor this as partial evaluation but msb->lsb
             let eq = MultilinearBasisEvals::new(field, &z[..vcminm]);
@@ -526,16 +553,15 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
     #[instrument(skip_all)]
     fn compute_round_bsc(&self, challs: &[El<F>], sum: Option<El<F>>) -> PolyEvals<F,1> {
         let i = challs.len();
-        let field = self.bscb.field;
-        let vc = self.bscb.vc;
-        let z = &self.bscb.z;
+        let field = self.bscb.scalars.field();
+        let vc = self.bscb.scalars.varcount();
+        let z = self.bscb.scalars.z();
 
         if i >= self.m {
             if i == self.m {
                 let mut ws = self.bscb.ws.borrow_mut();
                 *ws = evaluate_at_fromevals(field, vc, &challs[1..], self.bscb.get_reference()[0]);
-                let mut scstmut = self.bscb.scalarstate.borrow_mut();
-                *scstmut = MultilinearBasis::new(field, &z[(vc - i + 1)..]).evaluate(&challs[1..]);
+                self.bscb.scalars.set_state(&challs[1..]);
             }
             return self.compute_round(challs, sum)
         }
@@ -549,7 +575,7 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
         let eq1 = MultilinearBasisEvals::new(field, &z[(vc - self.m)..(vc - i - 1)]);
         let eq2 = MultilinearBasisEvals::new(field, challs);
 
-        self.get_base().ws.borrow().chunks_exact(1<<(self.m-i)).zip(eq2).for_each(|(wschunkj, eqj)| {
+        self.bscb.ws.borrow().chunks_exact(1<<(self.m-i)).zip(eq2).for_each(|(wschunkj, eqj)| {
 
             let (wsz, wso) = wschunkj.split_at(1 << (self.m - i - 1));
 
@@ -591,12 +617,12 @@ impl<'a, F> BaseFoldSumcheck<'a> for BaseFoldSumcheckDoubleEfficient<'a, F>
 impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckDoubleEfficient<'a, F>
     where F: RingStore<Type: Field + FiniteRing>
 {
-    type SCB = BaseFoldSumcheckBasic<'a, F, true>;
+    type SCB = BaseFoldScalars<'a, F>;
 
     fn TE() -> bool { true }
 
     fn get_base(&self) -> &Self::SCB {
-        &self.bscb
+        self.bscb.get_base()
     }
 
     fn get_reference(&self) -> [&[El<F>]; 1] {
@@ -605,15 +631,15 @@ impl<'a, F> Sumcheck<2, 1> for BaseFoldSumcheckDoubleEfficient<'a, F>
     }
 
     fn get_workspace(&self) -> [&RefCell<Vec<El<F>>>; 1] {
-        [&self.get_base().ws]
+        self.bscb.get_workspace()
     }
 
     fn compute_term(ring: &F, at: [&El<F>; 1], scalar: &El<F>) -> El<F> {
-        <Self::SCB as Sumcheck<2, 1>>::compute_term(ring, at, scalar)
+        BaseFoldSumcheckBasic::<'a, F, true>::compute_term(ring, at, scalar)
     }
 
     fn check_eval(&self, rX: Vec<El<F>>) -> bool {
-        self.get_base().check_eval(rX)
+        self.bscb.check_eval(rX)
     }
 }
 
