@@ -245,6 +245,15 @@ impl<'a, R: RingStore> DenseMatrixMul<'a, R> {
                 self.ring().add(acc, self.ring().mul_ref(ri, rhsi))))
     }
 
+    pub fn mul_transposed(&self, lhs: &[El<R>]) -> Vec<El<R>> {
+        assert!(lhs.len() == self.rows());
+        let mut res = (0..self.columns()).map(|_| self.ring().zero()).collect::<Vec<_>>();
+        self.data.chunks_exact(self.columns()).zip(lhs.iter()).for_each(|(row, li)|
+            row.iter().zip(res.iter_mut()).for_each(|(rij, resj)|
+                self.ring().add_assign(resj, self.ring().mul_ref(rij, li))));
+        res
+    }
+
     pub fn data(&self) -> &Vec<El<R>> {
         &self.data
     }
@@ -652,6 +661,24 @@ mod tests {
        
         assert!(mm.mulit(&rhs1).zip(mm.mulit(&rhs2)).map(|(l,r)| field.add(l,field.mul_ref_snd(r, &c)))
             .zip(mm.mulit(&rhs3)).all(|(l,r)| field.eq_el(&l, &r)))
+    }
+
+    // lhs·M agrees with the product of the explicitly transposed matrix with lhs
+    #[test]
+    fn test_matmul_mul_transposed() {
+        let field = Zn::new(65537).as_field().ok().unwrap();
+        let mut rng = rand::rng();
+
+        let r = 10;
+        let c = 12;
+
+        let mm = DenseMatrixMul::random(&field, &mut rng, r, c, "test_mul_transposed");
+        let mmt = DenseMatrixMul::new(&field, r, (0..c).flat_map(|j| (0..r).map(move |i| (i, j)))
+            .map(|(i, j)| field.clone_el(mm.get(i, j))).collect(), "test_mul_transposed_t");
+
+        let lhs = gen_random(&field, &mut rng, r);
+
+        test_rot(&field, &mm.mul_transposed(&lhs), &mmt.mul(&lhs), 0);
     }
 }
 
