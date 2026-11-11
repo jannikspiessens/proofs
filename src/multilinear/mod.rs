@@ -15,8 +15,6 @@ pub mod sumcheck;
 
 pub mod spartan;
 
-pub mod vMM;
-
 
 // indeterminates are ordered from encoding the lsb to encoding the msb
 pub fn from_hypercube_coeffs<Poly>(polyring: &Poly, coeffs: &[Coeff<Poly>]) -> El<Poly>
