@@ -130,6 +130,12 @@ impl<'a, F, BSC> SpartanPIOP<'a, BaseFoldPCS<'a, RSFoldableCode<'a, F>, BSC>>
     where F: RingStore + Clone, F::Type: Field + FiniteRing,
           BSC: BaseFoldSumcheck<'a>, <BSC as Sumcheck<2,1>>::SCB: SumcheckBase<2, F = F>
 {
+    // resets the Fiat-Shamir state of the PCS, from which all challenges of the PIOP are drawn,
+    // so that a verifier can replay the challenges of a prover that started from the same state
+    pub fn reset_fs(&self) {
+        self.pcs.reset_fs()
+    }
+
     pub fn random<RNG: Rng>(field: &'a F, mut rng: RNG,
         vc: usize, vcrows: usize, ver_rep: usize) -> Self
     {
