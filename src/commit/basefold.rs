@@ -15,7 +15,7 @@ use feanor_math::rings::multivariate::{
 };
 
 use crate::FSRng;
-use crate::util::{Coeff, FiatShamirSim, ZZbig};
+use crate::util::{Coeff, FiatShamirSim, ZZbig, expected_distinct, avg_merkle_multiproof_bits};
 use crate::codes::{
     LinearCode,
     foldablecodes::{FoldableCode, RSFoldableCode}
@@ -81,13 +81,33 @@ impl<'a, C, SC> BaseFoldPCS<'a, C, SC>
         &self.code
     }
 
+    // expected total number of bits spent on Merkle authentication paths across the whole
+    // IOPP.query phase (all ver_rep repetitions, all d folding rounds). Each round's oracle is
+    // committed with the standard FRI/BaseFold leaf layout, where a query's two complementary
+    // codeword values (at positions mu and mu + n(dind)) are stored as Merkle siblings, so the
+    // round's tree has code.n(dind) "pair slots" as its effective leaf domain. The ver_rep
+    // repeated queries into that domain are batched into a single Merkle multiproof per round
+    // (see avg_merkle_multiproof_bits for the derivation), which accounts not only for exact
+    // query collisions (Lemma 6, Appendix D of blindzksnarks.pdf) but also for queries that are
+    // merely close enough to share the upper part of their authentication path.
+    pub fn avg_authpath_bits(&self) -> f64 {
+        let d = self.code.d();
+        let ell = self.ver_rep.unwrap();
+        (0..d).map(|dind| avg_merkle_multiproof_bits(self.code.n(dind), ell)).sum()
+    }
+
+    // estimates the proof size in bits. Sumcheck round polynomials (3 field elements each) and,
+    // if k0 > 1, the final base-case message (k0 field elements) are sent directly (no Merkle
+    // opening needed). The opened codeword values and their authentication paths are costed using
+    // the expected (deduplicated) query counts and per-round path lengths from avg_authpath_bits().
     pub fn proofsize(&self) -> usize {
         let d = self.code.d();
-        let proofsize = d*2*self.ver_rep.unwrap() + 3*d +
-            if self.code.k(0) == 0 { 0 } else { self.code.k(0).ilog2() as usize };
+        let direct_els = 3*d + if self.code.k(0) > 1 { self.code.k(0) } else { 0 };
         let bits = ZZbig.abs_log2_ceil(&self.field().characteristic(ZZbig).unwrap()).unwrap();
-        let authpath = self.code.n(d).ilog2() as usize * 256; // worst-case no pruning
-        return proofsize*(bits + authpath)
+        let ell = self.ver_rep.unwrap();
+        let avg_opened_els: f64 = (0..d).map(|dind|
+            2. * expected_distinct(self.code.n(dind), ell)).sum();
+        ((direct_els*bits) as f64 + avg_opened_els*(bits as f64) + self.avg_authpath_bits()).round() as usize
     }
 }
 

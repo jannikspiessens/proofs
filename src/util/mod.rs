@@ -21,6 +21,35 @@ pub fn gen_vector<EL>(mut f: impl FnMut() -> EL, len: usize) -> Vec<EL> {
     (0..len).map(|_| f()).collect()
 }
 
+// expected number of distinct values hit when sampling `reps` indices uniformly at random
+// (with repetition) from a domain of size `domain`: a "balls into bins" expectation.
+// See Lemma 6 (Appendix D) of blindzksnarks.pdf: f_m(n) = n*(1 - (1 - 1/n)^m).
+pub fn expected_distinct(domain: usize, reps: usize) -> f64 {
+    let n = domain as f64;
+    n * (1. - (1. - 1. / n).powi(reps as i32))
+}
+
+// expected size (in bits) of a batched Merkle multiproof authenticating `reps` independent,
+// uniformly random leaf queries (with repetition, i.e. the ver_rep repetitions of a FRI/BaseFold-
+// style query phase) out of a tree with `domain` leaves. Only distinct, non-derivable sibling
+// hashes are counted: a node at level l (grouping domain/2^l leaves) is a shared ancestor of some
+// query with the same balls-into-bins expectation as expected_distinct, now applied to that
+// coarser domain, so writing A_l = expected_distinct(domain >> l, reps), a telescoping argument
+// gives the extra hashes needed to go from level l to l+1 as 2*A_{l+1} - A_l (each ancestor pair
+// that is already fully active collapses into its parent for free; each pair with only one active
+// child costs exactly one sent sibling hash). This generalizes expected_distinct (which only
+// credits exact leaf collisions) to partial overlap between distinct leaves' paths. Requires
+// `domain` to be a power of two (as for any unpadded binary Merkle tree).
+pub fn avg_merkle_multiproof_bits(domain: usize, reps: usize) -> f64 {
+    assert!(domain.is_power_of_two());
+    let levels = domain.ilog2() as usize;
+    (0..levels).map(|l| {
+        let a_l = expected_distinct(domain >> l, reps);
+        let a_l1 = expected_distinct(domain >> (l + 1), reps);
+        (2.*a_l1 - a_l) * 256.
+    }).sum()
+}
+
 pub fn gen_random<R, RNG>(ring: &R, mut rng: RNG, len: usize) -> Vec<El<R>>
     where R: RingStore<Type: FiniteRing>, RNG: Rng
 {
